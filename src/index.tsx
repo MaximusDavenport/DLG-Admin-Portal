@@ -463,7 +463,7 @@ app.get('/', (c) => {
 
                 updateDashboardStats(data) {
                     document.getElementById('activeProjects').textContent = data.activeProjects || '0';
-                    document.getElementById('totalRevenue').textContent = data.totalRevenue ? `$${data.totalRevenue.toLocaleString()}` : '$0';
+                    document.getElementById('totalRevenue').textContent = data.totalRevenue ? '$' + data.totalRevenue.toLocaleString() : '$0';
                     document.getElementById('totalClients').textContent = data.totalClients || '0';
                     document.getElementById('pendingInvoices').textContent = data.pendingInvoices || '0';
                 }
@@ -472,24 +472,18 @@ app.get('/', (c) => {
                     const container = document.getElementById('recentActivity');
                     
                     if (!activities || activities.length === 0) {
-                        container.innerHTML = `
-                            <div class="text-center py-4">
-                                <i class="fas fa-info-circle text-gray-500 text-2xl mb-2"></i>
-                                <p class="text-gray-400">No recent activity</p>
-                            </div>
-                        `;
+                        container.innerHTML = '<div class="text-center py-4"><i class="fas fa-info-circle text-gray-500 text-2xl mb-2"></i><p class="text-gray-400">No recent activity</p></div>';
                         return;
                     }
 
-                    container.innerHTML = activities.map(activity => `
-                        <div class="flex items-center p-3 bg-dlg-darker rounded-lg">
-                            <i class="fas fa-${this.getActivityIcon(activity.type)} text-dlg-red mr-3"></i>
-                            <div class="flex-1">
-                                <p class="text-sm font-medium text-white">${activity.description}</p>
-                                <p class="text-xs text-gray-400">${this.formatDate(activity.timestamp)}</p>
-                            </div>
-                        </div>
-                    `).join('');
+                    container.innerHTML = activities.map(activity => 
+                        '<div class="flex items-center p-3 bg-dlg-darker rounded-lg">' +
+                        '<i class="fas fa-' + this.getActivityIcon(activity.type) + ' text-dlg-red mr-3"></i>' +
+                        '<div class="flex-1">' +
+                        '<p class="text-sm font-medium text-white">' + activity.description + '</p>' +
+                        '<p class="text-xs text-gray-400">' + this.formatDate(activity.timestamp) + '</p>' +
+                        '</div></div>'
+                    ).join('');
                 }
 
                 getActivityIcon(type) {
@@ -514,9 +508,9 @@ app.get('/', (c) => {
                     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
                     if (diffMins < 1) return 'Just now';
-                    if (diffMins < 60) return `${diffMins} minutes ago`;
-                    if (diffHours < 24) return `${diffHours} hours ago`;
-                    if (diffDays < 7) return `${diffDays} days ago`;
+                    if (diffMins < 60) return diffMins + ' minutes ago';
+                    if (diffHours < 24) return diffHours + ' hours ago';
+                    if (diffDays < 7) return diffDays + ' days ago';
                     
                     return date.toLocaleDateString();
                 }
@@ -661,7 +655,7 @@ app.get('/', (c) => {
                 }
 
                 async apiCall(endpoint, method = 'GET', data = null) {
-                    const url = `${this.apiBaseUrl}${endpoint}`;
+                    const url = this.apiBaseUrl + endpoint;
                     
                     const options = {
                         method,
@@ -671,7 +665,7 @@ app.get('/', (c) => {
                     };
 
                     if (this.token) {
-                        options.headers['Authorization'] = `Bearer ${this.token}`;
+                        options.headers['Authorization'] = 'Bearer ' + this.token;
                     }
 
                     if (data && method !== 'GET') {
@@ -681,7 +675,7 @@ app.get('/', (c) => {
                     const response = await fetch(url, options);
                     
                     if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                        throw new Error('HTTP error! status: ' + response.status);
                     }
                     
                     return await response.json();
@@ -690,15 +684,14 @@ app.get('/', (c) => {
                 showNotification(message, type = 'info') {
                     const notification = document.createElement('div');
                     const bgColor = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-blue-600';
-                    notification.className = `notification ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg`;
-                    notification.innerHTML = `
-                        <div class="flex items-center justify-between">
-                            <span>${message}</span>
-                            <button onclick="this.parentElement.parentElement.remove()" class="ml-4 text-white opacity-70 hover:opacity-100">
-                                <i class="fas fa-times"></i>
-                            </button>
-                        </div>
-                    `;
+                    notification.className = 'notification ' + bgColor + ' text-white px-6 py-3 rounded-lg shadow-lg';
+                    notification.innerHTML = 
+                        '<div class="flex items-center justify-between">' +
+                        '<span>' + message + '</span>' +
+                        '<button onclick="this.parentElement.parentElement.remove()" class="ml-4 text-white opacity-70 hover:opacity-100">' +
+                        '<i class="fas fa-times"></i>' +
+                        '</button>' +
+                        '</div>';
                     
                     document.body.appendChild(notification);
                     
@@ -898,7 +891,7 @@ app.all('/api/*', async (c) => {
   const headers = Object.fromEntries(c.req.raw.headers.entries())
   
   // Forward the request to the actual API
-  const apiUrl = `https://app.davenportlegacy.com${path}`
+  const apiUrl = 'https://app.davenportlegacy.com' + path
   
   try {
     let body = undefined
