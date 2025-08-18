@@ -1,0 +1,24 @@
+{
+  "name": "dlg-platform-complete",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev dist",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name dlg-platform",
+    "start": "pm2 start ecosystem.config.cjs",
+    "stop": "pm2 delete dlg-platform 2>/dev/null || true",
+    "restart": "npm run stop && fuser -k 3000/tcp 2>/dev/null || true && npm run build && npm run start",
+    "logs": "pm2 logs dlg-platform --nostream"
+  },
+  "dependencies": {
+    "hono": "^4.9.2"
+  },
+  "devDependencies": {
+    "@hono/vite-build": "^1.2.0",
+    "@hono/vite-dev-server": "^0.18.2",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}
