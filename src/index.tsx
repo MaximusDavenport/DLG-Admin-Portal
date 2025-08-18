@@ -1274,8 +1274,8 @@ app.get('/', (c) => {
                                     <p class="text-xs text-white truncate">logo-placeholder</p>
                                     <p class="text-xs text-gray-400">Current Logo</p>
                                     <div class="mt-2 flex space-x-1">
-                                        <button class="bg-dlg-red hover:bg-red-700 text-white px-2 py-1 rounded text-xs" onclick="setAsLogo('placeholder')">
-                                            <i class="fas fa-star mr-1"></i>Set as Logo
+                                        <button class="bg-dlg-red hover:bg-red-700 text-white px-2 py-1 rounded text-xs" disabled>
+                                            <i class="fas fa-star mr-1"></i>Current Logo
                                         </button>
                                     </div>
                                 </div>
@@ -2436,7 +2436,7 @@ app.get('/', (c) => {
                             '<p class="text-xs text-white truncate">logo-placeholder</p>' +
                             '<p class="text-xs text-gray-400">Current Logo</p>' +
                             '<div class="mt-2 flex space-x-1">' +
-                                '<button class="bg-dlg-red hover:bg-red-700 text-white px-2 py-1 rounded text-xs" onclick="window.dlgAdminApp.setAsLogo(\'placeholder\')">' +
+                                '<button class="bg-dlg-red hover:bg-red-700 text-white px-2 py-1 rounded text-xs" disabled>' +
                                     '<i class="fas fa-star mr-1"></i>Active' +
                                 '</button>' +
                             '</div>' +
@@ -4344,6 +4344,7 @@ app.get('/', (c) => {
                     console.error('Error deleting media:', error);
                     this.showNotification('Error deleting file', 'error');
                 }
+            }
             }
 
             // Initialize the application when the DOM is ready
