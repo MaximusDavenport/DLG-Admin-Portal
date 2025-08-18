@@ -9,8 +9,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "webapp-production",
-      "database_id": "LOCAL-DEV"
+      "database_name": "dlg-platform-production-2",
+      "database_id": "1b636916-68b3-4858-a4c1-9c0957ac456b"
     }
   ]
 }

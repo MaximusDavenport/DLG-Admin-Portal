@@ -1227,9 +1227,34 @@ app.get('/', (c) => {
                         btn.addEventListener('click', (e) => this.handleQuickAction(e));
                     });
 
+                    // Sidebar toggle (mobile)
+                    const sidebar = document.getElementById('sidebar');
+                    const overlay = document.getElementById('sidebarOverlay');
+                    document.getElementById('sidebarToggle')?.addEventListener('click', () => {
+                        sidebar?.classList.add('open');
+                        overlay?.classList.add('active');
+                    });
+                    overlay?.addEventListener('click', () => {
+                        this.closeSidebar();
+                    });
+
+                    // Menu navigation
+                    document.querySelectorAll('.sidebar-menu-item').forEach((item) => {
+                        item.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            const el = e.currentTarget;
+                            const page = el && el.getAttribute('data-page');
+                            if (page) {
+                                this.setActiveMenu(el);
+                                this.showPage(page);
+                                this.closeSidebar();
+                            }
+                        });
+                    });
+
                     // Close modal when clicking outside
                     document.getElementById('loginModal').addEventListener('click', (e) => {
-                        if (e.target.id === 'loginModal') {
+                        const target = e.target; if (target && target.id === 'loginModal') {
                             this.hideLoginModal();
                         }
                     });
@@ -1310,10 +1335,13 @@ app.get('/', (c) => {
                     document.getElementById('logoutBtn').classList.toggle('hidden', !isLoggedIn);
                     document.getElementById('userInfo').classList.toggle('hidden', !isLoggedIn);
                     document.getElementById('welcomeSection').classList.toggle('hidden', isLoggedIn);
-                    document.getElementById('dashboardContent').classList.toggle('hidden', !isLoggedIn);
+                    document.getElementById('dashboardPage').classList.toggle('hidden', !isLoggedIn);
                     
                     if (isLoggedIn && this.user) {
                         document.getElementById('userName').textContent = this.user.name || this.user.email;
+                        this.showPage('dashboard');
+                    } else {
+                        this.showPage(null);
                     }
                 }
 
@@ -1576,6 +1604,31 @@ app.get('/', (c) => {
                             notification.remove();
                         }
                     }, 5000);
+                }
+                showPage(page) {
+                    const pages = ['dashboard', 'clients', 'projects', 'invoices', 'analytics', 'reports', 'settings'];
+                    pages.forEach((p) => {
+                        const el = document.getElementById(p + 'Page');
+                        if (el) el.classList.add('hidden');
+                    });
+                    if (page) {
+                        const target = document.getElementById(page + 'Page');
+                        if (target) target.classList.remove('hidden');
+                    }
+                }
+
+                setActiveMenu(activeEl) {
+                    document.querySelectorAll('.sidebar-menu-item').forEach((el) => {
+                        el.classList.remove('active');
+                    });
+                    if (activeEl && activeEl.classList) activeEl.classList.add('active');
+                }
+
+                closeSidebar() {
+                    const sidebar = document.getElementById('sidebar');
+                    const overlay = document.getElementById('sidebarOverlay');
+                    sidebar?.classList.remove('open');
+                    overlay?.classList.remove('active');
                 }
             }
 
