@@ -430,61 +430,11 @@ app.get('/', (c) => {
         </nav>
 
         <!-- Login Modal -->
-        <div id="loginModal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center">
-            <div class="card-dark rounded-lg shadow-2xl p-6 w-96 mx-4">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-xl font-bold text-dlg-red">DLG Staff Login</h2>
-                    <button id="closeLoginModal" class="text-gray-400 hover:text-white">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-                <form id="loginForm">
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Email</label>
-                        <input type="email" id="email" class="w-full px-3 py-2 bg-dlg-dark border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-dlg-red focus:border-transparent" placeholder="maximus@davenportlegacy.com" required>
-                    </div>
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Password</label>
-                        <input type="password" id="password" class="w-full px-3 py-2 bg-dlg-dark border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-dlg-red focus:border-transparent" required>
-                    </div>
-                    <button type="submit" class="w-full btn-dlg text-white py-2 px-4 rounded-md font-medium">
-                        <i class="fas fa-sign-in-alt mr-2"></i>Access DLG Portal
-                    </button>
-                </form>
-                <div id="loginError" class="hidden mt-4 p-3 bg-red-900 border border-red-700 text-red-200 rounded"></div>
-            </div>
-        </div>
+
 
         <!-- Main Content -->
         <main id="mainContent" class="main-content min-h-screen">
             <div class="content-wrapper">
-            <!-- Welcome Section (shown when not logged in) -->
-            <div id="welcomeSection" class="text-center py-12 px-6">
-                <div class="card-dark rounded-lg p-8 max-w-2xl mx-auto">
-                    <i class="fas fa-shield-alt text-6xl text-dlg-red mb-6"></i>
-                    <h1 class="text-4xl font-bold text-white mb-4">
-                        DLG Administration Portal
-                    </h1>
-                    <p class="text-xl text-gray-300 mb-8">
-                        Manage GA, BYF, and DLG operations from your central command center
-                    </p>
-                    <div class="grid md:grid-cols-2 gap-6 mb-8">
-                        <div class="card-dark p-6 rounded-lg">
-                            <i class="fas fa-chart-line text-3xl text-dlg-red mb-4"></i>
-                            <h3 class="text-lg font-semibold mb-2">Multi-Tenant Management</h3>
-                            <p class="text-gray-400">Oversee all GA and BYF operations with comprehensive admin tools</p>
-                        </div>
-                        <div class="card-dark p-6 rounded-lg">
-                            <i class="fas fa-cogs text-3xl text-dlg-red mb-4"></i>
-                            <h3 class="text-lg font-semibold mb-2">Advanced Administration</h3>
-                            <p class="text-gray-400">Complete project, client, and financial management capabilities</p>
-                        </div>
-                    </div>
-                    <button id="getStartedBtn" class="btn-dlg px-8 py-3 rounded-lg text-lg font-medium">
-                        <i class="fas fa-rocket mr-2"></i>Access Admin Portal
-                    </button>
-                </div>
-            </div>
 
             <!-- Dashboard Page -->
             <div id="dashboardPage" class="hidden p-6">
@@ -1931,6 +1881,93 @@ app.get('/', (c) => {
             </div>
         </div>
 
+        <!-- Login Modal -->
+        <div id="loginModal" class="hidden modal-overlay">
+            <div class="modal-content p-8 w-full max-w-md">
+                <div class="text-center mb-6">
+                    <div class="w-16 h-16 mx-auto mb-4 bg-dlg-red rounded-full flex items-center justify-center">
+                        <i class="fas fa-lock text-2xl text-white"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold text-white mb-2">Staff Login</h2>
+                    <p class="text-gray-400">Access the DLG Administration Portal</p>
+                </div>
+                
+                <form id="loginForm" class="space-y-4">
+                    <div id="loginError" class="hidden bg-red-600 bg-opacity-20 border border-red-600 text-red-400 p-3 rounded-lg text-sm">
+                        <!-- Error message will be displayed here -->
+                    </div>
+                    
+                    <div>
+                        <label for="email" class="block text-sm font-medium text-gray-400 mb-2">Email Address</label>
+                        <input type="email" id="email" name="email" required 
+                               class="w-full bg-gray-700 text-white rounded-lg px-4 py-3 focus:ring-2 focus:ring-dlg-red focus:outline-none"
+                               placeholder="admin@davenportlegacy.com">
+                    </div>
+                    
+                    <div>
+                        <label for="password" class="block text-sm font-medium text-gray-400 mb-2">Password</label>
+                        <input type="password" id="password" name="password" required 
+                               class="w-full bg-gray-700 text-white rounded-lg px-4 py-3 focus:ring-2 focus:ring-dlg-red focus:outline-none"
+                               placeholder="Enter your password">
+                    </div>
+                    
+                    <button type="submit" class="w-full btn-dlg text-white py-3 rounded-lg font-medium">
+                        <i class="fas fa-sign-in-alt mr-2"></i>Login to Portal
+                    </button>
+                </form>
+                
+                <div class="mt-6 text-center">
+                    <button id="closeLoginModal" class="text-gray-400 hover:text-white text-sm">
+                        <i class="fas fa-times mr-1"></i>Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Welcome Section (for logged out users) -->
+        <div id="welcomeSection" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-dlg-darker via-gray-900 to-dlg-darker">
+            <div class="max-w-4xl mx-auto px-4 text-center">
+                <div class="mb-8">
+                    <div class="w-24 h-24 mx-auto mb-6 bg-dlg-red rounded-full flex items-center justify-center">
+                        <span class="text-3xl font-bold text-white">DLG</span>
+                    </div>
+                    <h1 class="text-5xl font-bold text-white mb-4">
+                        DLG Administration Portal
+                    </h1>
+                    <p class="text-xl text-gray-300 mb-8">
+                        Comprehensive business management platform for Davenport Legacy Group operations
+                    </p>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+                    <div class="card-dark p-6 rounded-lg">
+                        <i class="fas fa-users text-3xl text-dlg-red mb-4"></i>
+                        <h3 class="text-lg font-semibold text-white mb-2">Client Management</h3>
+                        <p class="text-gray-400 text-sm">Manage client relationships, contacts, and project assignments</p>
+                    </div>
+                    <div class="card-dark p-6 rounded-lg">
+                        <i class="fas fa-project-diagram text-3xl text-dlg-red mb-4"></i>
+                        <h3 class="text-lg font-semibold text-white mb-2">Project Tracking</h3>
+                        <p class="text-gray-400 text-sm">Monitor project progress, timelines, and deliverables</p>
+                    </div>
+                    <div class="card-dark p-6 rounded-lg">
+                        <i class="fas fa-file-invoice-dollar text-3xl text-dlg-red mb-4"></i>
+                        <h3 class="text-lg font-semibold text-white mb-2">Financial Management</h3>
+                        <p class="text-gray-400 text-sm">Handle invoicing, payments, and financial reporting</p>
+                    </div>
+                </div>
+                
+                <div class="space-y-4">
+                    <button id="getStartedBtn" class="btn-dlg text-white px-8 py-4 rounded-lg text-lg font-medium mr-4">
+                        <i class="fas fa-rocket mr-2"></i>Get Started
+                    </button>
+                    <p class="text-sm text-gray-500">
+                        Authorized personnel only. Contact IT support for access.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <!-- Footer -->
         <footer class="bg-dlg-darker border-t border-dlg-red mt-12">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -1986,14 +2023,14 @@ app.get('/', (c) => {
                 }
 
                 setupEventListeners() {
-                    // Login/Logout buttons
-                    document.getElementById('loginBtn').addEventListener('click', () => this.showLoginModal());
-                    document.getElementById('getStartedBtn').addEventListener('click', () => this.showLoginModal());
-                    document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+                    // Login/Logout buttons with error handling
+                    document.getElementById('loginBtn')?.addEventListener('click', () => this.showLoginModal());
+                    document.getElementById('getStartedBtn')?.addEventListener('click', () => this.showLoginModal());
+                    document.getElementById('logoutBtn')?.addEventListener('click', () => this.logout());
                     
                     // Login modal
-                    document.getElementById('closeLoginModal').addEventListener('click', () => this.hideLoginModal());
-                    document.getElementById('loginForm').addEventListener('submit', (e) => this.handleLogin(e));
+                    document.getElementById('closeLoginModal')?.addEventListener('click', () => this.hideLoginModal());
+                    document.getElementById('loginForm')?.addEventListener('submit', (e) => this.handleLogin(e));
                     
                     // Quick actions
                     document.querySelectorAll('.quick-action-btn').forEach(btn => {
@@ -2131,13 +2168,13 @@ app.get('/', (c) => {
                 }
 
                 showLoginModal() {
-                    document.getElementById('loginModal').classList.remove('hidden');
-                    document.getElementById('email').focus();
+                    document.getElementById('loginModal')?.classList.remove('hidden');
+                    document.getElementById('email')?.focus();
                 }
 
                 hideLoginModal() {
-                    document.getElementById('loginModal').classList.add('hidden');
-                    document.getElementById('loginError').classList.add('hidden');
+                    document.getElementById('loginModal')?.classList.add('hidden');
+                    document.getElementById('loginError')?.classList.add('hidden');
                 }
 
                 async handleLogin(e) {
@@ -2200,25 +2237,44 @@ app.get('/', (c) => {
                 updateUI() {
                     const isLoggedIn = !!this.token;
                     
-                    // Toggle visibility of elements
-                    document.getElementById('loginBtn').classList.toggle('hidden', isLoggedIn);
-                    document.getElementById('logoutBtn').classList.toggle('hidden', !isLoggedIn);
-                    document.getElementById('userInfo').classList.toggle('hidden', !isLoggedIn);
-                    document.getElementById('welcomeSection').classList.toggle('hidden', isLoggedIn);
-                    document.getElementById('dashboardPage').classList.toggle('hidden', !isLoggedIn);
+                    // Toggle visibility of elements - use optional chaining to avoid errors
+                    document.getElementById('loginBtn')?.classList.toggle('hidden', isLoggedIn);
+                    document.getElementById('logoutBtn')?.classList.toggle('hidden', !isLoggedIn);
+                    document.getElementById('userInfo')?.classList.toggle('hidden', !isLoggedIn);
+                    document.getElementById('welcomeSection')?.classList.toggle('hidden', isLoggedIn);
                     
-                    // Hide sidebar and sidebar toggle for logged out users
-                    document.getElementById('sidebar').classList.toggle('hidden', !isLoggedIn);
-                    document.getElementById('sidebarToggle').classList.toggle('hidden', !isLoggedIn);
-                    document.getElementById('sidebarOverlay').classList.toggle('hidden', !isLoggedIn);
+                    // Hide sidebar and related elements for logged out users
+                    const sidebar = document.getElementById('sidebar');
+                    const sidebarToggle = document.getElementById('sidebarToggle');
+                    const sidebarOverlay = document.getElementById('sidebarOverlay');
+                    
+                    if (sidebar) sidebar.classList.toggle('hidden', !isLoggedIn);
+                    if (sidebarToggle) sidebarToggle.classList.toggle('hidden', !isLoggedIn);
+                    if (sidebarOverlay) sidebarOverlay.classList.toggle('hidden', !isLoggedIn);
+                    
+                    // Hide all pages for logged out users
+                    const pages = ['dashboard', 'clients', 'projects', 'invoices', 'analytics', 'reports', 'media', 'settings', 'clientDetail', 'projectDetail', 'invoiceDetail'];
+                    pages.forEach(page => {
+                        const pageEl = document.getElementById(page + 'Page');
+                        if (pageEl) {
+                            pageEl.classList.toggle('hidden', !isLoggedIn);
+                        }
+                    });
                     
                     if (isLoggedIn && this.user) {
-                        document.getElementById('userName').textContent = this.user.name || this.user.email;
+                        const userName = document.getElementById('userName');
+                        if (userName) {
+                            userName.textContent = this.user.name || this.user.email;
+                        }
                         this.showPage('dashboard');
                         // Load dashboard data after showing the page
                         this.loadDashboardData();
                     } else {
-                        this.showPage(null);
+                        // Show welcome section for logged out users
+                        const welcomeSection = document.getElementById('welcomeSection');
+                        if (welcomeSection) {
+                            welcomeSection.classList.remove('hidden');
+                        }
                     }
                 }
 
