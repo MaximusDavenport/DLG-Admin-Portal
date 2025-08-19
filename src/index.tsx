@@ -766,11 +766,6 @@ app.get('/', (c) => {
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM ready, initializing...');
             
-            // Auto-login: Directly show dashboard with populated data
-            setTimeout(() => {
-                showDashboard();
-            }, 500);
-            
             const loginBtn = document.getElementById('loginBtn');
             const modal = document.getElementById('loginModal');
             const closeBtn = document.getElementById('closeModal');
