@@ -1335,8 +1335,7 @@ app.get('/', (c) => {
             document.getElementById('landingPage').classList.add('hidden');
             document.getElementById('adminDashboard').classList.remove('hidden');
             
-            // Initialize navigation
-            initializeNavigation();
+            // Initialize navigation - done in main DOMContentLoaded handler
             
             // Load current logo for dashboard and all site elements
             loadCurrentLogo();
@@ -1351,52 +1350,7 @@ app.get('/', (c) => {
             document.getElementById('landingPage').classList.remove('hidden');
         }
 
-        function initializeNavigation() {
-            const navItems = document.querySelectorAll('.nav-item');
-            const sections = document.querySelectorAll('.content-section');
-            
-            // Handle navigation clicks
-            navItems.forEach(item => {
-                item.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    
-                    const sectionName = item.getAttribute('data-section');
-                    
-                    // Update active nav item
-                    navItems.forEach(nav => nav.classList.remove('active'));
-                    item.classList.add('active');
-                    
-                    // Show corresponding section
-                    sections.forEach(section => section.classList.add('hidden'));
-                    document.getElementById(sectionName + 'Section').classList.remove('hidden');
-                    
-                    // Initialize section-specific functionality
-                    if (sectionName === 'dashboard') {
-                        loadDashboardStats();
-                    } else if (sectionName === 'media') {
-                        initializeMediaManagement();
-                    } else if (sectionName === 'clients') {
-                        initializeClientManagement();
-                    } else if (sectionName === 'projects') {
-                        initializeProjectManagement();
-                    } else if (sectionName === 'invoices') {
-                        initializeInvoiceManagement();
-                    }
-                    
-                    console.log('Navigated to:', sectionName);
-                });
-            });
-            
-            // Handle logout
-            const logoutBtn = document.getElementById('logoutBtn');
-            if (logoutBtn) {
-                logoutBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    console.log('Logging out');
-                    hideDashboard();
-                });
-            }
-        }
+
 
         // Media Management Functions
         function initializeMediaManagement() {
