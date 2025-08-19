@@ -1199,15 +1199,42 @@ app.get('/', (c) => {
             const closeBtn = document.getElementById('closeModal');
             const loginForm = document.getElementById('loginForm');
             
+            // Debug logging
+            console.log('Login elements found:', {
+                loginBtn: !!loginBtn,
+                modal: !!modal,
+                closeBtn: !!closeBtn,
+                loginForm: !!loginForm
+            });
+            
             // Open modal
             if (loginBtn) {
+                console.log('Adding click listener to login button');
                 loginBtn.addEventListener('click', function(e) {
+                    console.log('🔥 LOGIN BUTTON CLICKED! Event:', e);
                     e.preventDefault();
-                    console.log('Login button clicked');
+                    
                     if (modal) {
+                        console.log('✅ Modal found, removing hidden class');
                         modal.classList.remove('hidden');
+                        console.log('✅ Modal should now be visible');
+                    } else {
+                        console.error('❌ Modal not found!');
                     }
                 });
+                
+                // Test if button is clickable
+                console.log('Login button element:', loginBtn);
+                console.log('Login button classes:', loginBtn.className);
+                console.log('Login button style:', loginBtn.style.cssText);
+                
+                // Add a test click after 3 seconds to see if it works programmatically
+                setTimeout(() => {
+                    console.log('🧪 Testing programmatic click...');
+                    loginBtn.click();
+                }, 3000);
+            } else {
+                console.error('❌ Login button not found!');
             }
             
             // Close modal
