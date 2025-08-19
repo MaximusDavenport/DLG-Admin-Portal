@@ -425,9 +425,56 @@ app.get('/', (c) => {
         .content-section {
             animation: fadeIn 0.3s ease-in;
         }
+        .page-content {
+            animation: fadeIn 0.3s ease-in;
+        }
+        .page-content.active {
+            display: block;
+        }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* Switch toggle styles */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #374151;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #ef4444;
+        }
+        input:checked + .slider:before {
+            transform: translateX(20px);
         }
     </style>
 </head>
@@ -477,25 +524,38 @@ app.get('/', (c) => {
                     <a href="#" class="nav-item active" data-section="dashboard">
                         <i class="fas fa-tachometer-alt mr-3"></i>Dashboard
                     </a>
-                    <a href="#" class="nav-item" data-section="media">
-                        <i class="fas fa-images mr-3"></i>Media Management
-                    </a>
                     <a href="#" class="nav-item" data-section="clients">
-                        <i class="fas fa-users mr-3"></i>Client Management
+                        <i class="fas fa-users mr-3"></i>Clients
                     </a>
                     <a href="#" class="nav-item" data-section="projects">
-                        <i class="fas fa-project-diagram mr-3"></i>Project Tracking
+                        <i class="fas fa-project-diagram mr-3"></i>Projects
                     </a>
                     <a href="#" class="nav-item" data-section="invoices">
-                        <i class="fas fa-file-invoice-dollar mr-3"></i>Invoice Management
+                        <i class="fas fa-file-invoice-dollar mr-3"></i>Invoices
+                    </a>
+                    <a href="#" class="nav-item" data-section="media">
+                        <i class="fas fa-images mr-3"></i>Media
+                    </a>
+                    <a href="#" class="nav-item" data-section="settings">
+                        <i class="fas fa-cog mr-3"></i>Settings
                     </a>
                 </nav>
             </div>
 
             <!-- Content Area -->
-            <div class="flex-1 p-8">
-                <!-- Dashboard Section -->
-                <div id="dashboardSection" class="content-section">
+            <div class="flex-1">
+                <!-- Breadcrumb Navigation -->
+                <div class="bg-gray-700 px-6 py-4 border-b border-gray-600">
+                    <nav class="text-sm breadcrumbs" id="breadcrumbs">
+                        <span class="text-gray-300">DLG Admin</span>
+                        <span class="text-gray-500 mx-2">></span>
+                        <span class="text-white" id="currentPageTitle">Dashboard</span>
+                    </nav>
+                </div>
+                
+                <div class="p-8">
+                    <!-- Dashboard Content -->
+                    <div id="dashboardContent" class="page-content active">
                     <h2 class="text-2xl font-bold text-white mb-6">Dashboard Overview</h2>
                     
                     <!-- Stats Cards -->
@@ -570,7 +630,161 @@ app.get('/', (c) => {
                             </div>
                         </div>
                     </div>
-                </div>
+                    </div>
+                    
+                    <!-- Clients Page -->
+                    <div id="clientsContent" class="page-content hidden">
+                        <div class="mb-6">
+                            <div class="flex justify-between items-center">
+                                <h1 class="text-3xl font-bold text-white">Clients Management</h1>
+                                <button id="addClientBtn" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg">
+                                    <i class="fas fa-plus mr-2"></i>Add Client
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Client Statistics Cards -->
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Total Clients</h3>
+                                <p class="text-2xl font-bold text-white mt-2" id="totalClientsCount">0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Active Projects</h3>
+                                <p class="text-2xl font-bold text-green-400 mt-2" id="activeProjectsCount">0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Total Revenue</h3>
+                                <p class="text-2xl font-bold text-blue-400 mt-2" id="totalRevenueAmount">$0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Pending Invoices</h3>
+                                <p class="text-2xl font-bold text-yellow-400 mt-2" id="pendingInvoicesCount">0</p>
+                            </div>
+                        </div>
+                        
+                        <!-- Clients Table -->
+                        <div class="bg-gray-800 rounded-lg">
+                            <div class="p-6 border-b border-gray-700">
+                                <h2 class="text-xl font-semibold text-white">All Clients</h2>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full">
+                                    <thead class="bg-gray-700">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Client</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Company</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Projects</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Revenue</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="clientsTableBody" class="bg-gray-800 divide-y divide-gray-700">
+                                        <!-- Client rows will be populated here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <!-- Empty State -->
+                            <div id="emptyClientsState" class="hidden p-8 text-center">
+                                <i class="fas fa-users text-4xl text-gray-500 mb-4"></i>
+                                <h3 class="text-xl font-semibold text-gray-300 mb-2">No clients found</h3>
+                                <p class="text-gray-500 mb-4">Get started by adding your first client</p>
+                                <button class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg" onclick="document.getElementById('addClientBtn').click()">
+                                    <i class="fas fa-plus mr-2"></i>Add Client
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Projects Page -->
+                    <div id="projectsContent" class="page-content hidden">
+                        <div class="mb-6">
+                            <div class="flex justify-between items-center">
+                                <h1 class="text-3xl font-bold text-white">Projects Management</h1>
+                                <button id="addProjectBtn" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg">
+                                    <i class="fas fa-plus mr-2"></i>New Project
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Project Statistics -->
+                        <div class="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Total Projects</h3>
+                                <p class="text-2xl font-bold text-white mt-2" id="totalProjectsCount">0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Active</h3>
+                                <p class="text-2xl font-bold text-green-400 mt-2" id="activeProjectsPageCount">0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Completed</h3>
+                                <p class="text-2xl font-bold text-blue-400 mt-2" id="completedProjectsCount">0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">On Hold</h3>
+                                <p class="text-2xl font-bold text-yellow-400 mt-2" id="onHoldProjectsCount">0</p>
+                            </div>
+                            <div class="bg-gray-800 p-6 rounded-lg">
+                                <h3 class="text-gray-400 text-sm font-medium">Revenue</h3>
+                                <p class="text-2xl font-bold text-green-500 mt-2" id="projectsRevenueTotal">$0</p>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h2 class="text-xl font-semibold text-white mb-4">All Projects</h2>
+                            <div id="projectsTableContainer">
+                                <div class="text-center py-8">
+                                    <i class="fas fa-project-diagram text-4xl text-gray-500 mb-4"></i>
+                                    <h3 class="text-xl font-semibold text-gray-300 mb-2">No projects found</h3>
+                                    <p class="text-gray-500 mb-4">Create your first project to get started</p>
+                                    <button class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg" onclick="document.getElementById('addProjectBtn').click()">
+                                        <i class="fas fa-plus mr-2"></i>New Project
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Invoices Page -->
+                    <div id="invoicesContent" class="page-content hidden">
+                        <div class="mb-6">
+                            <div class="flex justify-between items-center">
+                                <h1 class="text-3xl font-bold text-white">Invoices Management</h1>
+                                <button id="addInvoiceBtn" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg">
+                                    <i class="fas fa-plus mr-2"></i>Create Invoice
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h2 class="text-xl font-semibold text-white mb-4">All Invoices</h2>
+                            <div id="invoicesTableContainer">
+                                <div class="text-center py-8">
+                                    <i class="fas fa-file-invoice-dollar text-4xl text-gray-500 mb-4"></i>
+                                    <h3 class="text-xl font-semibold text-gray-300 mb-2">No invoices found</h3>
+                                    <p class="text-gray-500 mb-4">Create your first invoice to get started</p>
+                                    <button class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg" onclick="document.getElementById('addInvoiceBtn').click()">
+                                        <i class="fas fa-plus mr-2"></i>Create Invoice
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Media Page -->
+                    <div id="mediaContent" class="page-content hidden">
+                        <div class="mb-6">
+                            <div class="flex justify-between items-center">
+                                <h1 class="text-3xl font-bold text-white">Media Management</h1>
+                                <label for="mediaUpload" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg cursor-pointer">
+                                    <i class="fas fa-upload mr-2"></i>Upload Files
+                                    <input type="file" id="mediaUpload" class="hidden" multiple accept="image/*,video/*,audio/*,.pdf,.doc,.docx">
+                                </label>
+                            </div>
+                        </div>
 
                 <!-- Other sections (initially hidden) -->
                 <div id="mediaSection" class="content-section hidden">
@@ -896,6 +1110,82 @@ app.get('/', (c) => {
                 </div>
             </form>
         </div>
+                    
+                    <!-- Settings Page -->
+                    <div id="settingsContent" class="page-content hidden">
+                        <div class="mb-6">
+                            <h1 class="text-3xl font-bold text-white">Settings</h1>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                            <!-- Company Information -->
+                            <div class="bg-gray-800 rounded-lg p-6">
+                                <h2 class="text-xl font-semibold text-white mb-4">Company Information</h2>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Company Name</label>
+                                        <input type="text" class="w-full bg-gray-700 text-white rounded px-3 py-2" value="Davenport Legacy Group">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Email</label>
+                                        <input type="email" class="w-full bg-gray-700 text-white rounded px-3 py-2" value="admin@davenportlegacy.com">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Phone</label>
+                                        <input type="tel" class="w-full bg-gray-700 text-white rounded px-3 py-2" value="+1 (555) 123-4567">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Address</label>
+                                        <textarea class="w-full bg-gray-700 text-white rounded px-3 py-2 h-20">123 Business Ave\\nSuite 100\\nCity, State 12345</textarea>
+                                    </div>
+                                    <button class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded">
+                                        Save Changes
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- System Preferences -->
+                            <div class="bg-gray-800 rounded-lg p-6">
+                                <h2 class="text-xl font-semibold text-white mb-4">System Preferences</h2>
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-300">Email Notifications</span>
+                                        <label class="switch">
+                                            <input type="checkbox" checked>
+                                            <span class="slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-300">Auto Backup</span>
+                                        <label class="switch">
+                                            <input type="checkbox" checked>
+                                            <span class="slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-300">Dark Mode</span>
+                                        <label class="switch">
+                                            <input type="checkbox" checked disabled>
+                                            <span class="slider"></span>
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Timezone</label>
+                                        <select class="w-full bg-gray-700 text-white rounded px-3 py-2">
+                                            <option>UTC-05:00 (Eastern Time)</option>
+                                            <option>UTC-06:00 (Central Time)</option>
+                                            <option>UTC-07:00 (Mountain Time)</option>
+                                            <option>UTC-08:00 (Pacific Time)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -970,8 +1260,74 @@ app.get('/', (c) => {
                 });
             }
             
+            // Initialize page navigation
+            initializeNavigation();
+            
             console.log('Initialization complete');
         });
+        
+        // Page Navigation System
+        function initializeNavigation() {
+            const navItems = document.querySelectorAll('.nav-item');
+            const pageContents = document.querySelectorAll('.page-content');
+            const currentPageTitle = document.getElementById('currentPageTitle');
+            
+            navItems.forEach(item => {
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const section = item.getAttribute('data-section');
+                    
+                    // Update active nav item
+                    navItems.forEach(nav => nav.classList.remove('active'));
+                    item.classList.add('active');
+                    
+                    // Show corresponding page content
+                    pageContents.forEach(content => content.classList.add('hidden'));
+                    const targetContent = document.getElementById(section + 'Content');
+                    if (targetContent) {
+                        targetContent.classList.remove('hidden');
+                        
+                        // Update breadcrumb
+                        const pageTitle = item.textContent.trim();
+                        currentPageTitle.textContent = pageTitle;
+                        
+                        // Load page-specific data
+                        loadPageData(section);
+                    }
+                });
+            });
+        }
+        
+        // Load page-specific data
+        function loadPageData(section) {
+            switch(section) {
+                case 'dashboard':
+                    loadDashboardStats();
+                    break;
+                case 'clients':
+                    loadClientsData();
+                    break;
+                case 'projects':
+                    loadProjectsData();
+                    break;
+                case 'invoices':
+                    loadInvoicesData();
+                    break;
+                case 'media':
+                    loadMediaData();
+                    initializeMediaManagement();
+                    break;
+                case 'settings':
+                    loadSettingsData();
+                    break;
+            }
+        }
+        
+        // Settings data loader
+        function loadSettingsData() {
+            console.log('Loading settings data...');
+            // Settings data is mostly static, no API calls needed
+        }
 
         // Dashboard Functions
         function showDashboard() {
@@ -1557,6 +1913,12 @@ app.get('/', (c) => {
             
             const tableBody = document.getElementById('clientsTableBody');
             const emptyState = document.getElementById('emptyClientsState');
+            
+            // Update statistics
+            const totalClientsCount = document.getElementById('totalClientsCount');
+            const activeProjectsCount = document.getElementById('activeProjectsCount');
+            const totalRevenueAmount = document.getElementById('totalRevenueAmount');
+            const pendingInvoicesCount = document.getElementById('pendingInvoicesCount');
             
             try {
                 const response = await fetch('/api/clients', {
