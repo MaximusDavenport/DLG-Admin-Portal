@@ -13,5 +13,11 @@
       "database_id": "13e73a1e-5f81-4e23-8041-b10f03f8d542"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "dlg-admin-portal-media"
+    }
+  ],
 
 }

@@ -4,7 +4,8 @@ import { serveStatic } from 'hono/cloudflare-workers'
 
 type Bindings = {
   DB: D1Database
-  JWT_SECRET: string
+  MEDIA_BUCKET: R2Bucket
+  JWT_SECRET?: string
 }
 
 type Variables = {
@@ -947,7 +948,7 @@ app.get('/', (c) => {
             }
         }
 
-        function handleFileUpload(files) {
+        async function handleFileUpload(files) {
             console.log('Handling file upload:', files.length, 'files');
             
             if (files.length === 0) return;
@@ -959,83 +960,114 @@ app.get('/', (c) => {
             // Show progress
             uploadProgress.classList.remove('hidden');
             
-            // Simulate file upload (in real app, this would upload to server)
-            let progress = 0;
-            const interval = setInterval(() => {
-                progress += 10;
-                progressBar.style.width = progress + '%';
-                uploadStatus.textContent = \`Uploading... \${progress}%\`;
+            try {
+                const fileArray = Array.from(files);
+                let completedFiles = 0;
                 
-                if (progress >= 100) {
-                    clearInterval(interval);
+                // Upload files one by one
+                for (const file of fileArray) {
+                    uploadStatus.textContent = \`Uploading \${file.name}...\`;
                     
-                    // Process files
-                    Array.from(files).forEach(file => {
-                        const mediaItem = {
-                            id: Date.now() + Math.random(),
-                            name: file.name,
-                            type: file.type,
-                            size: file.size,
-                            url: URL.createObjectURL(file), // In real app, this would be server URL
-                            uploadDate: new Date().toISOString()
-                        };
-                        
-                        // Save to localStorage (in real app, this would save to server)
-                        const existingMedia = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
-                        existingMedia.push(mediaItem);
-                        localStorage.setItem('dlg_admin_media', JSON.stringify(existingMedia));
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    const response = await fetch('/api/media/upload', {
+                        method: 'POST',
+                        headers: {
+                            'X-Tenant-ID': '1'
+                        },
+                        body: formData
                     });
                     
-                    // Hide progress and refresh media grid
-                    setTimeout(() => {
-                        uploadProgress.classList.add('hidden');
-                        progressBar.style.width = '0%';
-                        uploadStatus.textContent = 'Uploading...';
-                        loadMediaData();
-                        showNotification('Files uploaded successfully!', 'success');
-                    }, 500);
+                    if (!response.ok) {
+                        throw new Error(\`Failed to upload \${file.name}\`);
+                    }
+                    
+                    completedFiles++;
+                    const progress = Math.round((completedFiles / fileArray.length) * 100);
+                    progressBar.style.width = progress + '%';
+                    uploadStatus.textContent = \`Uploaded \${completedFiles}/\${fileArray.length} files\`;
                 }
-            }, 100);
+                
+                // Success - hide progress and refresh
+                setTimeout(() => {
+                    uploadProgress.classList.add('hidden');
+                    progressBar.style.width = '0%';
+                    uploadStatus.textContent = 'Uploading...';
+                    loadMediaData();
+                    showNotification(\`Successfully uploaded \${fileArray.length} file(s)!\`, 'success');
+                }, 500);
+                
+            } catch (error) {
+                console.error('Upload error:', error);
+                uploadProgress.classList.add('hidden');
+                progressBar.style.width = '0%';
+                uploadStatus.textContent = 'Uploading...';
+                showNotification(\`Upload failed: \${error.message}\`, 'error');
+            }
         }
 
-        function loadMediaData() {
+        async function loadMediaData() {
             console.log('Loading media data');
             
             const mediaGrid = document.getElementById('mediaGrid');
             const emptyState = document.getElementById('emptyMediaState');
             
-            // Get media from localStorage (in real app, this would fetch from server)
-            const media = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
-            
-            if (media.length === 0) {
+            try {
+                const response = await fetch('/api/media', {
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load media');
+                }
+                
+                const media = await response.json();
+                
+                if (media.length === 0) {
+                    mediaGrid.innerHTML = '';
+                    emptyState.classList.remove('hidden');
+                    return;
+                }
+                
+                emptyState.classList.add('hidden');
+                
+                // Generate media grid HTML
+                mediaGrid.innerHTML = media.map(item => {
+                    const filename = item.key.split('/').pop();
+                    const isImage = filename.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                    
+                    return \`
+                        <div class="bg-gray-700 rounded-lg p-3 hover:bg-gray-600 transition-colors group">
+                            <div class="aspect-square bg-gray-800 rounded mb-2 flex items-center justify-center overflow-hidden">
+                                \${isImage
+                                    ? \`<img src="\${item.url}" alt="\${filename}" class="w-full h-full object-cover">\`
+                                    : \`<i class="fas fa-file text-2xl text-gray-400"></i>\`
+                                }
+                            </div>
+                            <p class="text-white text-sm truncate" title="\${filename}">\${filename}</p>
+                            <p class="text-gray-400 text-xs">\${formatFileSize(item.size)}</p>
+                            <p class="text-gray-500 text-xs">\${new Date(item.uploaded).toLocaleDateString()}</p>
+                            <div class="mt-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onclick="setAsLogo('\${item.key}')" class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">
+                                    Set Logo
+                                </button>
+                                <button onclick="deleteMedia('\${item.key}')" class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                    \`;
+                }).join('');
+                
+            } catch (error) {
+                console.error('Error loading media:', error);
+                showNotification('Failed to load media files', 'error');
                 mediaGrid.innerHTML = '';
                 emptyState.classList.remove('hidden');
-                return;
             }
-            
-            emptyState.classList.add('hidden');
-            
-            // Generate media grid HTML
-            mediaGrid.innerHTML = media.map(item => \`
-                <div class="bg-gray-700 rounded-lg p-3 hover:bg-gray-600 transition-colors group">
-                    <div class="aspect-square bg-gray-800 rounded mb-2 flex items-center justify-center overflow-hidden">
-                        \${item.type.startsWith('image/') 
-                            ? \`<img src="\${item.url}" alt="\${item.name}" class="w-full h-full object-cover">\`
-                            : \`<i class="fas fa-file text-2xl text-gray-400"></i>\`
-                        }
-                    </div>
-                    <p class="text-white text-sm truncate">\${item.name}</p>
-                    <p class="text-gray-400 text-xs">\${formatFileSize(item.size)}</p>
-                    <div class="mt-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onclick="setAsLogo('\${item.id}')" class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">
-                            Set Logo
-                        </button>
-                        <button onclick="deleteMedia('\${item.id}')" class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">
-                            Delete
-                        </button>
-                    </div>
-                </div>
-            \`).join('');
         }
 
         function formatFileSize(bytes) {
@@ -1059,25 +1091,37 @@ app.get('/', (c) => {
             }
         }
 
-        function deleteMedia(mediaId) {
-            console.log('Deleting media:', mediaId);
+        async function deleteMedia(mediaKey) {
+            console.log('Deleting media:', mediaKey);
             
             if (!confirm('Are you sure you want to delete this file?')) return;
             
-            const media = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
-            const updatedMedia = media.filter(item => item.id != mediaId);
-            
-            localStorage.setItem('dlg_admin_media', JSON.stringify(updatedMedia));
-            
-            // Check if deleted file was the current logo
-            const currentLogo = JSON.parse(localStorage.getItem('dlg_admin_current_logo') || 'null');
-            if (currentLogo && currentLogo.id == mediaId) {
-                localStorage.removeItem('dlg_admin_current_logo');
-                updateCurrentLogoDisplay(null);
+            try {
+                const response = await fetch(\`/api/media/\${mediaKey}\`, {
+                    method: 'DELETE',
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to delete file');
+                }
+                
+                // Check if deleted file was the current logo
+                const currentLogo = JSON.parse(localStorage.getItem('dlg_admin_current_logo') || 'null');
+                if (currentLogo && currentLogo.key === mediaKey) {
+                    localStorage.removeItem('dlg_admin_current_logo');
+                    updateCurrentLogoDisplay(null);
+                }
+                
+                loadMediaData();
+                showNotification('File deleted successfully!', 'success');
+                
+            } catch (error) {
+                console.error('Delete error:', error);
+                showNotification('Failed to delete file', 'error');
             }
-            
-            loadMediaData();
-            showNotification('File deleted successfully!', 'success');
         }
 
         function updateCurrentLogoDisplay(logoData) {
@@ -1748,6 +1792,124 @@ app.get('/', (c) => {
     </script>
 </body>
 </html>`);
+})
+
+// Media upload API
+app.post('/api/media/upload', async (c) => {
+  const { env } = c
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File
+    
+    if (!file) {
+      return c.json({ error: 'No file provided' }, 400)
+    }
+    
+    // Generate unique filename
+    const ext = file.name.split('.').pop()
+    const timestamp = Date.now()
+    const random = Math.random().toString(36).substring(7)
+    const key = `uploads/${timestamp}-${random}.${ext}`
+    
+    const arrayBuffer = await file.arrayBuffer()
+    
+    await env.MEDIA_BUCKET.put(key, arrayBuffer, {
+      httpMetadata: {
+        contentType: file.type,
+      },
+    })
+    
+    return c.json({ 
+      key, 
+      url: `/api/media/${key}`,
+      filename: file.name,
+      originalName: file.name,
+      size: file.size,
+      type: file.type,
+      uploadedAt: new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('Upload error:', error)
+    return c.json({ error: 'Upload failed' }, 500)
+  }
+})
+
+// Serve media files
+app.get('/api/media/:key{.*}', async (c) => {
+  const { env } = c
+  const key = c.req.param('key')
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    const object = await env.MEDIA_BUCKET.get(key)
+    
+    if (!object) {
+      return c.notFound()
+    }
+    
+    return new Response(object.body, {
+      headers: {
+        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+        'Cache-Control': 'public, max-age=31536000',
+        'ETag': object.etag,
+      }
+    })
+  } catch (error) {
+    console.error('Media serve error:', error)
+    return c.json({ error: 'Failed to serve file' }, 500)
+  }
+})
+
+// List uploaded media files
+app.get('/api/media', async (c) => {
+  const { env } = c
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    const objects = await env.MEDIA_BUCKET.list({ prefix: 'uploads/' })
+    
+    const files = objects.objects.map(obj => ({
+      key: obj.key,
+      url: `/api/media/${obj.key}`,
+      size: obj.size,
+      uploaded: obj.uploaded,
+      etag: obj.etag
+    }))
+    
+    return c.json(files)
+  } catch (error) {
+    console.error('Media list error:', error)
+    return c.json({ error: 'Failed to list files' }, 500)
+  }
+})
+
+// Delete media file
+app.delete('/api/media/:key{.*}', async (c) => {
+  const { env } = c
+  const key = c.req.param('key')
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    await env.MEDIA_BUCKET.delete(key)
+    return c.json({ message: 'File deleted successfully' })
+  } catch (error) {
+    console.error('Media delete error:', error)
+    return c.json({ error: 'Failed to delete file' }, 500)
+  }
 })
 
 export default app
