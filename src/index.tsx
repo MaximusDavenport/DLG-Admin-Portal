@@ -904,9 +904,6 @@ app.get('/', (c) => {
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM ready, initializing...');
             
-            // Load logo on page load (for landing page and login modal)
-            loadCurrentLogo();
-            
             const loginBtn = document.getElementById('loginBtn');
             const modal = document.getElementById('loginModal');
             const closeBtn = document.getElementById('closeModal');
@@ -1185,14 +1182,16 @@ app.get('/', (c) => {
                     
                     if (firstImage) {
                         console.log('Auto-setting first image as logo:', firstImage.key);
+                        const fileExtension = firstImage.key.split('.').pop().toLowerCase();
                         const logoData = {
                             ...firstImage,
                             name: firstImage.key.split('/').pop(),
-                            type: 'image/' + firstImage.key.split('.').pop().toLowerCase()
+                            type: 'image/' + fileExtension
                         };
                         localStorage.setItem('dlg_admin_current_logo', JSON.stringify(logoData));
                         updateCurrentLogoDisplay(logoData);
                         updateSiteLogos(logoData);
+                        console.log('Logo auto-set successfully:', logoData);
                     }
                 }
                 
@@ -1379,6 +1378,12 @@ app.get('/', (c) => {
             updateCurrentLogoDisplay(currentLogo);
             updateSiteLogos(currentLogo);
         }
+        
+        // Initialize logo display after DOM and all functions are ready
+        setTimeout(() => {
+            console.log('Loading site logos...');
+            loadCurrentLogo();
+        }, 100);
         
         // Update site logos across all pages
         function updateSiteLogos(logoData) {
