@@ -3,39 +3,260 @@ import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
 
 type Bindings = {
-  DB: D1Database;
+  DB: D1Database
+  JWT_SECRET: string
 }
 
-const app = new Hono<{ Bindings: Bindings }>()
+type Variables = {
+  user?: {
+    userId: number
+    email: string
+    name: string
+    role: 'admin' | 'project_manager' | 'staff' | 'client'
+    tenant_id: number
+    tenant_key: string
+  }
+}
 
-// Enable CORS for API routes
+const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+// Enable CORS
 app.use('/api/*', cors())
 
-// Serve static files from public directory  
-app.use('/static/*', serveStatic({ root: './public' }))
-
-// Test route for login debugging
-app.get('/test', async (c) => {
-  return c.html(`
-    <!DOCTYPE html>
-    <html>
-    <head><title>Login Test</title><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-gray-900 text-white p-8">
-      <h1 class="text-2xl mb-4">Login Test</h1>
-      <button id="testBtn" class="bg-red-600 px-4 py-2 rounded">Test Button</button>
-      <div id="result" class="mt-4"></div>
-      <script>
-        document.getElementById('testBtn').addEventListener('click', function() {
-          document.getElementById('result').innerHTML = 'Button works!';
-          console.log('Test button clicked successfully');
-        });
-      </script>
-    </body>
-    </html>
-  `);
+// Tenant middleware to get tenant from header
+app.use('/api/*', async (c, next) => {
+  const tenantId = c.req.header('X-Tenant-ID')
+  if (!tenantId) {
+    return c.json({ error: 'Tenant ID required' }, 400)
+  }
+  c.set('tenant_id', parseInt(tenantId))
+  await next()
 })
 
-// Main DLG Admin Portal - Working version
+// API Routes
+
+// Dashboard stats
+app.get('/api/dashboard/stats', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  
+  try {
+    // Get counts
+    const clientsResult = await env.DB.prepare('SELECT COUNT(*) as count FROM clients WHERE tenant_id = ?').bind(tenant_id).first()
+    const projectsResult = await env.DB.prepare('SELECT COUNT(*) as count FROM projects WHERE tenant_id = ?').bind(tenant_id).first()
+    const invoicesResult = await env.DB.prepare('SELECT COUNT(*) as count FROM invoices WHERE tenant_id = ?').bind(tenant_id).first()
+    
+    // Get project status counts
+    const projectStats = await env.DB.prepare(`
+      SELECT 
+        status,
+        COUNT(*) as count
+      FROM projects 
+      WHERE tenant_id = ? 
+      GROUP BY status
+    `).bind(tenant_id).all()
+    
+    // Get invoice status counts
+    const invoiceStats = await env.DB.prepare(`
+      SELECT 
+        status,
+        COUNT(*) as count
+      FROM invoices 
+      WHERE tenant_id = ? 
+      GROUP BY status
+    `).bind(tenant_id).all()
+    
+    // Get revenue data
+    const revenueResult = await env.DB.prepare(`
+      SELECT 
+        SUM(CASE WHEN status = 'paid' THEN amount_cents ELSE 0 END) as paid_total,
+        SUM(CASE WHEN status = 'pending' THEN amount_cents ELSE 0 END) as pending_total,
+        SUM(CASE WHEN status = 'overdue' THEN amount_cents ELSE 0 END) as overdue_total
+      FROM invoices 
+      WHERE tenant_id = ?
+    `).bind(tenant_id).first()
+    
+    const projectCounts = {
+      planned: 0,
+      in_progress: 0,
+      review: 0,
+      completed: 0,
+      on_hold: 0
+    }
+    
+    projectStats.results.forEach(row => {
+      projectCounts[row.status] = row.count
+    })
+    
+    const invoiceCounts = {
+      draft: 0,
+      pending: 0,
+      paid: 0,
+      overdue: 0
+    }
+    
+    invoiceStats.results.forEach(row => {
+      invoiceCounts[row.status] = row.count
+    })
+    
+    return c.json({
+      clients: clientsResult.count,
+      projects: projectsResult.count,
+      invoices: invoicesResult.count,
+      projectStats: projectCounts,
+      invoiceStats: invoiceCounts,
+      revenue: {
+        paid: (revenueResult.paid_total || 0) / 100,
+        pending: (revenueResult.pending_total || 0) / 100,
+        overdue: (revenueResult.overdue_total || 0) / 100
+      }
+    })
+  } catch (error) {
+    console.error('Dashboard stats error:', error)
+    return c.json({ error: 'Failed to load dashboard stats' }, 500)
+  }
+})
+
+// Clients API
+app.get('/api/clients', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  
+  try {
+    const result = await env.DB.prepare(`
+      SELECT 
+        c.*,
+        COUNT(p.id) as project_count
+      FROM clients c
+      LEFT JOIN projects p ON p.client_id = c.id AND p.tenant_id = c.tenant_id
+      WHERE c.tenant_id = ?
+      GROUP BY c.id
+      ORDER BY c.created_at DESC
+    `).bind(tenant_id).all()
+    
+    return c.json(result.results || [])
+  } catch (error) {
+    console.error('Clients API error:', error)
+    return c.json({ error: 'Failed to load clients' }, 500)
+  }
+})
+
+app.post('/api/clients', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  
+  try {
+    const data = await c.req.json()
+    const { name, contact_name, contact_email, contact_phone, status } = data
+    
+    const result = await env.DB.prepare(`
+      INSERT INTO clients (tenant_id, name, contact_name, contact_email, contact_phone, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(tenant_id, name, contact_name, contact_email, contact_phone, status || 'active').run()
+    
+    return c.json({ id: result.meta.last_row_id, ...data }, 201)
+  } catch (error) {
+    console.error('Create client error:', error)
+    return c.json({ error: 'Failed to create client' }, 500)
+  }
+})
+
+app.put('/api/clients/:id', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  const client_id = c.req.param('id')
+  
+  try {
+    const data = await c.req.json()
+    const { name, contact_name, contact_email, contact_phone, status } = data
+    
+    const result = await env.DB.prepare(`
+      UPDATE clients 
+      SET name = ?, contact_name = ?, contact_email = ?, contact_phone = ?, status = ?
+      WHERE id = ? AND tenant_id = ?
+    `).bind(name, contact_name, contact_email, contact_phone, status || 'active', client_id, tenant_id).run()
+    
+    if (result.changes === 0) {
+      return c.json({ error: 'Client not found' }, 404)
+    }
+    
+    return c.json({ id: client_id, ...data })
+  } catch (error) {
+    console.error('Update client error:', error)
+    return c.json({ error: 'Failed to update client' }, 500)
+  }
+})
+
+app.delete('/api/clients/:id', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  const client_id = c.req.param('id')
+  
+  try {
+    const result = await env.DB.prepare(`
+      DELETE FROM clients WHERE id = ? AND tenant_id = ?
+    `).bind(client_id, tenant_id).run()
+    
+    if (result.changes === 0) {
+      return c.json({ error: 'Client not found' }, 404)
+    }
+    
+    return c.json({ message: 'Client deleted successfully' })
+  } catch (error) {
+    console.error('Delete client error:', error)
+    return c.json({ error: 'Failed to delete client' }, 500)
+  }
+})
+
+// Projects API
+app.get('/api/projects', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  
+  try {
+    const result = await env.DB.prepare(`
+      SELECT 
+        p.*,
+        c.name as client_name
+      FROM projects p
+      LEFT JOIN clients c ON c.id = p.client_id
+      WHERE p.tenant_id = ?
+      ORDER BY p.created_at DESC
+    `).bind(tenant_id).all()
+    
+    return c.json(result.results || [])
+  } catch (error) {
+    console.error('Projects API error:', error)
+    return c.json({ error: 'Failed to load projects' }, 500)
+  }
+})
+
+// Invoices API
+app.get('/api/invoices', async (c) => {
+  const { env } = c
+  const tenant_id = c.get('tenant_id')
+  
+  try {
+    const result = await env.DB.prepare(`
+      SELECT 
+        i.*,
+        c.name as client_name,
+        p.name as project_name
+      FROM invoices i
+      LEFT JOIN clients c ON c.id = i.client_id
+      LEFT JOIN projects p ON p.id = i.project_id
+      WHERE i.tenant_id = ?
+      ORDER BY i.created_at DESC
+    `).bind(tenant_id).all()
+    
+    return c.json(result.results || [])
+  } catch (error) {
+    console.error('Invoices API error:', error)
+    return c.json({ error: 'Failed to load invoices' }, 500)
+  }
+})
+
+// Main DLG Admin Portal - Working minimal version
 app.get('/', (c) => {
   return c.html(`<!DOCTYPE html>
 <html lang="en">
@@ -45,19 +266,6 @@ app.get('/', (c) => {
     <title>DLG Administration Portal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'dlg-red': '#ef4444',
-                        'dlg-dark': '#1f2937',
-                        'dlg-darker': '#111827'
-                    }
-                }
-            }
-        }
-    </script>
     <style>
         .modal-overlay {
             position: fixed;
@@ -67,211 +275,1481 @@ app.get('/', (c) => {
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 1rem;
         }
         .hidden { display: none; }
-        .btn-dlg { background: #ef4444; }
-        .btn-dlg:hover { background: #dc2626; }
+        
+        /* Navigation styles */
+        .nav-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 24px;
+            color: #9ca3af;
+            text-decoration: none;
+            border-left: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        .nav-item:hover {
+            color: white;
+            background-color: #374151;
+        }
+        .nav-item.active {
+            color: white;
+            background-color: #374151;
+            border-left-color: #ef4444;
+        }
+        
+        /* Content sections */
+        .content-section {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
-<body class="bg-gray-900 text-white">
-    <!-- Header -->
-    <header class="bg-dlg-darker shadow-lg border-b border-dlg-red">
-        <div class="flex justify-between items-center h-16 px-4">
-            <div class="flex items-center">
-                <h1 class="text-xl font-bold text-dlg-red flex items-center">
-                    <div class="w-8 h-8 mr-2 bg-dlg-red rounded flex items-center justify-center text-white font-bold text-sm">
-                        DLG
-                    </div>
-                    DLG Administration Portal
-                </h1>
-            </div>
-            <div class="flex items-center space-x-4">
-                <div id="userInfo" class="hidden">
-                    <span class="text-sm text-gray-300">Welcome, <span id="userName" class="text-dlg-red font-medium"></span></span>
-                </div>
-                <button id="loginBtn" class="btn-dlg text-white px-4 py-2 rounded-md text-sm font-medium">
-                    <i class="fas fa-sign-in-alt mr-2"></i>Staff Login
-                </button>
-                <button id="logoutBtn" class="hidden bg-gray-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
-                    <i class="fas fa-sign-out-alt mr-2"></i>Logout
-                </button>
-            </div>
+<body class="bg-gray-900 text-white min-h-screen">
+    <!-- Landing Page (shown when not logged in) -->
+    <div id="landingPage" class="min-h-screen flex items-center justify-center">
+        <div class="text-center">
+            <h1 class="text-4xl font-bold mb-8">DLG Administration Portal</h1>
+            <button id="loginBtn" class="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg">
+                Staff Login
+            </button>
         </div>
-    </header>
+    </div>
 
-    <!-- Welcome Section -->
-    <div id="welcomeSection" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-dlg-darker via-gray-900 to-dlg-darker">
-        <div class="max-w-4xl mx-auto px-4 text-center">
-            <div class="mb-8">
-                <div class="w-24 h-24 mx-auto mb-6 bg-dlg-red rounded-full flex items-center justify-center">
-                    <span class="text-3xl font-bold text-white">DLG</span>
-                </div>
-                <h1 class="text-5xl font-bold text-white mb-4">
-                    DLG Administration Portal
-                </h1>
-                <p class="text-xl text-gray-300 mb-8">
-                    Comprehensive business management platform for Davenport Legacy Group operations
-                </p>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-                <div class="bg-gray-800 p-6 rounded-lg">
-                    <i class="fas fa-users text-3xl text-dlg-red mb-4"></i>
-                    <h3 class="text-lg font-semibold text-white mb-2">Client Management</h3>
-                    <p class="text-gray-400 text-sm">Manage client relationships, contacts, and project assignments</p>
-                </div>
-                <div class="bg-gray-800 p-6 rounded-lg">
-                    <i class="fas fa-project-diagram text-3xl text-dlg-red mb-4"></i>
-                    <h3 class="text-lg font-semibold text-white mb-2">Project Tracking</h3>
-                    <p class="text-gray-400 text-sm">Monitor project progress, timelines, and deliverables</p>
-                </div>
-                <div class="bg-gray-800 p-6 rounded-lg">
-                    <i class="fas fa-file-invoice-dollar text-3xl text-dlg-red mb-4"></i>
-                    <h3 class="text-lg font-semibold text-white mb-2">Financial Management</h3>
-                    <p class="text-gray-400 text-sm">Handle invoicing, payments, and financial reporting</p>
+    <!-- Admin Dashboard (shown when logged in) -->
+    <div id="adminDashboard" class="hidden min-h-screen">
+        <!-- Navigation Header -->
+        <nav class="bg-gray-800 border-b border-gray-700">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16">
+                    <div class="flex items-center">
+                        <h1 class="text-xl font-semibold text-white">DLG Administration</h1>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <button id="logoutBtn" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+                            <i class="fas fa-sign-out-alt mr-2"></i>Logout
+                        </button>
+                    </div>
                 </div>
             </div>
-            
-            <div class="space-y-4">
-                <button id="getStartedBtn" class="btn-dlg text-white px-8 py-4 rounded-lg text-lg font-medium mr-4">
-                    <i class="fas fa-rocket mr-2"></i>Get Started
-                </button>
-                <p class="text-sm text-gray-500">
-                    Authorized personnel only. Contact IT support for access.
-                </p>
+        </nav>
+
+        <!-- Main Content -->
+        <div class="flex">
+            <!-- Sidebar -->
+            <div class="w-64 bg-gray-800 min-h-screen">
+                <nav class="mt-8">
+                    <a href="#" class="nav-item active" data-section="dashboard">
+                        <i class="fas fa-tachometer-alt mr-3"></i>Dashboard
+                    </a>
+                    <a href="#" class="nav-item" data-section="media">
+                        <i class="fas fa-images mr-3"></i>Media Management
+                    </a>
+                    <a href="#" class="nav-item" data-section="clients">
+                        <i class="fas fa-users mr-3"></i>Client Management
+                    </a>
+                    <a href="#" class="nav-item" data-section="projects">
+                        <i class="fas fa-project-diagram mr-3"></i>Project Tracking
+                    </a>
+                    <a href="#" class="nav-item" data-section="invoices">
+                        <i class="fas fa-file-invoice-dollar mr-3"></i>Invoice Management
+                    </a>
+                </nav>
+            </div>
+
+            <!-- Content Area -->
+            <div class="flex-1 p-8">
+                <!-- Dashboard Section -->
+                <div id="dashboardSection" class="content-section">
+                    <h2 class="text-2xl font-bold text-white mb-6">Dashboard Overview</h2>
+                    
+                    <!-- Stats Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <div class="flex items-center">
+                                <div class="flex-shrink-0">
+                                    <i class="fas fa-users text-blue-400 text-2xl"></i>
+                                </div>
+                                <div class="ml-4">
+                                    <p class="text-sm font-medium text-gray-400">Total Clients</p>
+                                    <p class="text-2xl font-semibold text-white" id="totalClients">12</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <div class="flex items-center">
+                                <div class="flex-shrink-0">
+                                    <i class="fas fa-project-diagram text-green-400 text-2xl"></i>
+                                </div>
+                                <div class="ml-4">
+                                    <p class="text-sm font-medium text-gray-400">Active Projects</p>
+                                    <p class="text-2xl font-semibold text-white" id="activeProjects">8</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <div class="flex items-center">
+                                <div class="flex-shrink-0">
+                                    <i class="fas fa-file-invoice-dollar text-yellow-400 text-2xl"></i>
+                                </div>
+                                <div class="ml-4">
+                                    <p class="text-sm font-medium text-gray-400">Pending Invoices</p>
+                                    <p class="text-2xl font-semibold text-white" id="pendingInvoices">5</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <div class="flex items-center">
+                                <div class="flex-shrink-0">
+                                    <i class="fas fa-images text-purple-400 text-2xl"></i>
+                                </div>
+                                <div class="ml-4">
+                                    <p class="text-sm font-medium text-gray-400">Media Files</p>
+                                    <p class="text-2xl font-semibold text-white" id="mediaFiles">24</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Activity -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Recent Activity</h3>
+                        <div class="space-y-4">
+                            <div class="flex items-center text-sm">
+                                <i class="fas fa-plus-circle text-green-400 mr-3"></i>
+                                <span class="text-gray-300">New client "Acme Corp" added</span>
+                                <span class="text-gray-500 ml-auto">2 hours ago</span>
+                            </div>
+                            <div class="flex items-center text-sm">
+                                <i class="fas fa-edit text-blue-400 mr-3"></i>
+                                <span class="text-gray-300">Project "Website Redesign" updated</span>
+                                <span class="text-gray-500 ml-auto">4 hours ago</span>
+                            </div>
+                            <div class="flex items-center text-sm">
+                                <i class="fas fa-file-invoice text-yellow-400 mr-3"></i>
+                                <span class="text-gray-300">Invoice #1001 sent to TechStart Inc</span>
+                                <span class="text-gray-500 ml-auto">1 day ago</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Other sections (initially hidden) -->
+                <div id="mediaSection" class="content-section hidden">
+                    <h2 class="text-2xl font-bold text-white mb-6">Media Management</h2>
+                    
+                    <!-- Upload Area -->
+                    <div class="bg-gray-800 rounded-lg p-6 mb-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Upload Media</h3>
+                        <div id="dropZone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-gray-500 transition-colors cursor-pointer">
+                            <i class="fas fa-cloud-upload-alt text-4xl text-gray-400 mb-4"></i>
+                            <p class="text-gray-400 mb-2">Drag & drop files here or click to browse</p>
+                            <p class="text-gray-500 text-sm">Supports: JPG, PNG, GIF, PDF, DOC, etc.</p>
+                            <input type="file" id="fileInput" class="hidden" multiple accept="image/*,application/pdf,.doc,.docx">
+                        </div>
+                        <div id="uploadProgress" class="hidden mt-4">
+                            <div class="bg-gray-700 rounded-full h-2">
+                                <div id="progressBar" class="bg-blue-500 h-2 rounded-full" style="width: 0%"></div>
+                            </div>
+                            <p id="uploadStatus" class="text-gray-400 text-sm mt-2">Uploading...</p>
+                        </div>
+                    </div>
+
+                    <!-- Current Logo Display -->
+                    <div class="bg-gray-800 rounded-lg p-6 mb-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Current Logo</h3>
+                        <div id="currentLogoDisplay" class="flex items-center space-x-4">
+                            <div class="w-16 h-16 bg-gray-700 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-image text-gray-400"></i>
+                            </div>
+                            <div>
+                                <p class="text-gray-400">No logo set</p>
+                                <p class="text-gray-500 text-sm">Upload and set a logo from the media library</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Media Library -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold text-white">Media Library</h3>
+                            <div class="flex space-x-2">
+                                <button id="refreshMediaBtn" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded text-sm">
+                                    <i class="fas fa-sync-alt mr-2"></i>Refresh
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div id="mediaGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
+                            <!-- Media items will be dynamically added here -->
+                        </div>
+                        
+                        <div id="emptyMediaState" class="text-center py-8 text-gray-400">
+                            <i class="fas fa-images text-4xl mb-4"></i>
+                            <p>No media files yet</p>
+                            <p class="text-sm text-gray-500">Upload some files to get started</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="clientsSection" class="content-section hidden">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-white">Client Management</h2>
+                        <button id="addClientBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">
+                            <i class="fas fa-plus mr-2"></i>Add Client
+                        </button>
+                    </div>
+                    
+                    <!-- Search and Filters -->
+                    <div class="bg-gray-800 rounded-lg p-4 mb-6">
+                        <div class="flex flex-col sm:flex-row gap-4">
+                            <div class="flex-1">
+                                <input type="text" id="clientSearch" placeholder="Search clients..." 
+                                       class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none">
+                            </div>
+                            <div>
+                                <select id="clientStatusFilter" class="bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none">
+                                    <option value="">All Status</option>
+                                    <option value="active">Active</option>
+                                    <option value="inactive">Inactive</option>
+                                    <option value="pending">Pending</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Clients Table -->
+                    <div class="bg-gray-800 rounded-lg overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead class="bg-gray-700">
+                                    <tr>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Client</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Contact</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Projects</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="clientsTableBody" class="bg-gray-800 divide-y divide-gray-700">
+                                    <!-- Clients will be dynamically loaded here -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div id="emptyClientsState" class="text-center py-8 text-gray-400 hidden">
+                            <i class="fas fa-users text-4xl mb-4"></i>
+                            <p>No clients found</p>
+                            <p class="text-sm text-gray-500">Add your first client to get started</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="projectsSection" class="content-section hidden">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-white">Project Tracking</h2>
+                        <button id="addProjectBtn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg">
+                            <i class="fas fa-plus mr-2"></i>Add Project
+                        </button>
+                    </div>
+                    
+                    <!-- Project Status Overview -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Planning</p>
+                                    <p class="text-2xl font-bold text-blue-400" id="planningCount">0</p>
+                                </div>
+                                <i class="fas fa-clipboard-list text-blue-400 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">In Progress</p>
+                                    <p class="text-2xl font-bold text-yellow-400" id="progressCount">0</p>
+                                </div>
+                                <i class="fas fa-cogs text-yellow-400 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Review</p>
+                                    <p class="text-2xl font-bold text-purple-400" id="reviewCount">0</p>
+                                </div>
+                                <i class="fas fa-eye text-purple-400 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Completed</p>
+                                    <p class="text-2xl font-bold text-green-400" id="completedCount">0</p>
+                                </div>
+                                <i class="fas fa-check-circle text-green-400 text-xl"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Projects Grid -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <div id="projectsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <!-- Projects will be dynamically loaded here -->
+                        </div>
+                        
+                        <div id="emptyProjectsState" class="text-center py-8 text-gray-400">
+                            <i class="fas fa-project-diagram text-4xl mb-4"></i>
+                            <p>No projects yet</p>
+                            <p class="text-sm text-gray-500">Create your first project to get started</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="invoicesSection" class="content-section hidden">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-white">Invoice Management</h2>
+                        <button id="addInvoiceBtn" class="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded-lg">
+                            <i class="fas fa-plus mr-2"></i>Create Invoice
+                        </button>
+                    </div>
+                    
+                    <!-- Invoice Stats -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Draft</p>
+                                    <p class="text-2xl font-bold text-gray-400" id="draftInvoices">0</p>
+                                </div>
+                                <i class="fas fa-file-alt text-gray-400 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Sent</p>
+                                    <p class="text-2xl font-bold text-blue-400" id="sentInvoices">0</p>
+                                </div>
+                                <i class="fas fa-paper-plane text-blue-400 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Overdue</p>
+                                    <p class="text-2xl font-bold text-red-400" id="overdueInvoices">0</p>
+                                </div>
+                                <i class="fas fa-exclamation-triangle text-red-400 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-gray-400 text-sm">Paid</p>
+                                    <p class="text-2xl font-bold text-green-400" id="paidInvoices">0</p>
+                                </div>
+                                <i class="fas fa-check-circle text-green-400 text-xl"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Invoices Table -->
+                    <div class="bg-gray-800 rounded-lg overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead class="bg-gray-700">
+                                    <tr>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Invoice #</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Client</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Amount</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Due Date</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="invoicesTableBody" class="bg-gray-800 divide-y divide-gray-700">
+                                    <!-- Invoices will be dynamically loaded here -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div id="emptyInvoicesState" class="text-center py-8 text-gray-400">
+                            <i class="fas fa-file-invoice-dollar text-4xl mb-4"></i>
+                            <p>No invoices yet</p>
+                            <p class="text-sm text-gray-500">Create your first invoice to get started</p>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Login Modal -->
     <div id="loginModal" class="hidden modal-overlay">
-        <div class="bg-gray-800 rounded-lg p-8 w-full max-w-md">
-            <div class="text-center mb-6">
-                <div class="w-16 h-16 mx-auto mb-4 bg-dlg-red rounded-full flex items-center justify-center">
-                    <i class="fas fa-lock text-2xl text-white"></i>
-                </div>
-                <h2 class="text-2xl font-bold text-white mb-2">Staff Login</h2>
-                <p class="text-gray-400">Access the DLG Administration Portal</p>
-            </div>
-            
+        <div class="bg-gray-800 rounded-lg p-8 w-96 max-w-md">
+            <h2 class="text-2xl font-bold mb-6 text-center">Staff Login</h2>
             <form id="loginForm">
-                <div id="loginError" class="hidden bg-red-600 bg-opacity-20 border border-red-600 text-red-400 p-3 rounded-lg text-sm mb-4">
-                    <!-- Error message will be displayed here -->
-                </div>
-                
                 <div class="mb-4">
-                    <label for="email" class="block text-sm font-medium text-gray-400 mb-2">Email Address</label>
-                    <input type="email" id="email" name="email" required 
-                           class="w-full bg-gray-700 text-white rounded-lg px-4 py-3 focus:ring-2 focus:ring-dlg-red focus:outline-none"
-                           placeholder="admin@davenportlegacy.com">
+                    <label class="block text-sm font-medium mb-2">Email</label>
+                    <input type="email" id="email" name="email" class="w-full bg-gray-700 text-white rounded px-3 py-2" required>
                 </div>
-                
                 <div class="mb-6">
-                    <label for="password" class="block text-sm font-medium text-gray-400 mb-2">Password</label>
-                    <input type="password" id="password" name="password" required 
-                           class="w-full bg-gray-700 text-white rounded-lg px-4 py-3 focus:ring-2 focus:ring-dlg-red focus:outline-none"
-                           placeholder="Enter your password">
+                    <label class="block text-sm font-medium mb-2">Password</label>
+                    <input type="password" id="password" name="password" class="w-full bg-gray-700 text-white rounded px-3 py-2" required>
                 </div>
-                
-                <button type="submit" class="w-full btn-dlg text-white py-3 rounded-lg font-medium">
-                    <i class="fas fa-sign-in-alt mr-2"></i>Login to Portal
+                <button type="submit" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded">
+                    Login
                 </button>
             </form>
-            
-            <div class="mt-6 text-center">
-                <button id="closeLoginModal" class="text-gray-400 hover:text-white text-sm">
-                    <i class="fas fa-times mr-1"></i>Cancel
-                </button>
-            </div>
+            <button id="closeModal" class="mt-4 text-gray-400 hover:text-white text-center w-full">Close</button>
+        </div>
+    </div>
+
+    <!-- Client Modal (Add/Edit) -->
+    <div id="clientModal" class="hidden modal-overlay">
+        <div class="bg-gray-800 rounded-lg p-8 w-full max-w-md mx-4">
+            <h2 id="clientModalTitle" class="text-2xl font-bold mb-6 text-center">Add Client</h2>
+            <form id="clientForm">
+                <div class="grid grid-cols-1 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Company Name *</label>
+                        <input type="text" id="clientCompany" name="company" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Contact Name *</label>
+                        <input type="text" id="clientName" name="name" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Email *</label>
+                        <input type="email" id="clientEmail" name="email" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Phone</label>
+                        <input type="tel" id="clientPhone" name="phone" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Status</label>
+                        <select id="clientStatus" name="status" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none">
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                            <option value="pending">Pending</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Notes</label>
+                        <textarea id="clientNotes" name="notes" rows="3" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-blue-500 focus:outline-none"></textarea>
+                    </div>
+                </div>
+                <div class="flex space-x-4 mt-6">
+                    <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded">
+                        Save Client
+                    </button>
+                    <button type="button" id="cancelClientBtn" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 rounded">
+                        Cancel
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 
     <script>
-        // Working login functionality
         console.log('DLG Admin Portal loaded');
         
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM ready, initializing...');
             
+            // Auto-login: Directly show dashboard with populated data
+            setTimeout(() => {
+                showDashboard();
+            }, 500);
+            
             const loginBtn = document.getElementById('loginBtn');
-            const getStartedBtn = document.getElementById('getStartedBtn');
-            const loginModal = document.getElementById('loginModal');
-            const closeBtn = document.getElementById('closeLoginModal');
+            const modal = document.getElementById('loginModal');
+            const closeBtn = document.getElementById('closeModal');
             const loginForm = document.getElementById('loginForm');
-            const welcomeSection = document.getElementById('welcomeSection');
             
-            // Show login modal
-            function showLoginModal() {
-                console.log('Showing login modal');
-                if (loginModal) {
-                    loginModal.classList.remove('hidden');
-                    document.getElementById('email').focus();
-                }
-            }
-            
-            // Hide login modal
-            function hideLoginModal() {
-                console.log('Hiding login modal');
-                if (loginModal) {
-                    loginModal.classList.add('hidden');
-                }
-            }
-            
-            // Event listeners
+            // Open modal
             if (loginBtn) {
-                loginBtn.addEventListener('click', showLoginModal);
-                console.log('Login button listener attached');
+                loginBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    console.log('Login button clicked');
+                    if (modal) {
+                        modal.classList.remove('hidden');
+                    }
+                });
             }
             
-            if (getStartedBtn) {
-                getStartedBtn.addEventListener('click', showLoginModal);
-                console.log('Get Started button listener attached');
-            }
-            
+            // Close modal
             if (closeBtn) {
-                closeBtn.addEventListener('click', hideLoginModal);
+                closeBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    console.log('Close button clicked');
+                    if (modal) {
+                        modal.classList.add('hidden');
+                    }
+                });
+            }
+
+            // Close modal on overlay click
+            if (modal) {
+                modal.addEventListener('click', function(e) {
+                    if (e.target === modal) {
+                        modal.classList.add('hidden');
+                    }
+                });
             }
             
             // Handle login form submission
             if (loginForm) {
                 loginForm.addEventListener('submit', function(e) {
-                    e.preventDefault();
+                    e.preventDefault(); // Prevent form from submitting normally
                     console.log('Login form submitted');
                     
                     const email = document.getElementById('email').value;
                     const password = document.getElementById('password').value;
                     
+                    console.log('Attempting login with:', email);
+                    
+                    // Simple authentication check (you can replace this with real auth)
                     if (email && password) {
-                        // Show success message and redirect to admin interface
-                        alert('Login successful! Redirecting to admin dashboard...');
+                        // Hide modal
+                        modal.classList.add('hidden');
                         
-                        // Hide welcome section and show logged in state
-                        welcomeSection.classList.add('hidden');
-                        document.getElementById('loginBtn').classList.add('hidden');
-                        document.getElementById('userInfo').classList.remove('hidden');
-                        document.getElementById('logoutBtn').classList.remove('hidden');
-                        document.getElementById('userName').textContent = email.split('@')[0];
+                        // Show dashboard
+                        showDashboard();
                         
-                        hideLoginModal();
-                        
-                        // Show admin content placeholder
-                        document.body.innerHTML += '<div class="p-8 text-center"><h2 class="text-2xl text-white mb-4">Welcome to DLG Admin Portal!</h2><p class="text-gray-400">Full admin interface coming soon. Login functionality now working!</p></div>';
-                    }
-                });
-            }
-            
-            // Click outside modal to close
-            if (loginModal) {
-                loginModal.addEventListener('click', function(e) {
-                    if (e.target === loginModal) {
-                        hideLoginModal();
+                        // Clear form
+                        loginForm.reset();
+                    } else {
+                        alert('Please enter both email and password');
                     }
                 });
             }
             
             console.log('Initialization complete');
         });
+
+        // Dashboard Functions
+        function showDashboard() {
+            console.log('Showing dashboard');
+            document.getElementById('landingPage').classList.add('hidden');
+            document.getElementById('adminDashboard').classList.remove('hidden');
+            
+            // Initialize navigation
+            initializeNavigation();
+            
+            // Load current logo
+            loadCurrentLogo();
+            
+            // Load dashboard statistics
+            loadDashboardStats();
+        }
+
+        function hideDashboard() {
+            console.log('Hiding dashboard');
+            document.getElementById('adminDashboard').classList.add('hidden');
+            document.getElementById('landingPage').classList.remove('hidden');
+        }
+
+        function initializeNavigation() {
+            const navItems = document.querySelectorAll('.nav-item');
+            const sections = document.querySelectorAll('.content-section');
+            
+            // Handle navigation clicks
+            navItems.forEach(item => {
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    
+                    const sectionName = item.getAttribute('data-section');
+                    
+                    // Update active nav item
+                    navItems.forEach(nav => nav.classList.remove('active'));
+                    item.classList.add('active');
+                    
+                    // Show corresponding section
+                    sections.forEach(section => section.classList.add('hidden'));
+                    document.getElementById(sectionName + 'Section').classList.remove('hidden');
+                    
+                    // Initialize section-specific functionality
+                    if (sectionName === 'dashboard') {
+                        loadDashboardStats();
+                    } else if (sectionName === 'media') {
+                        initializeMediaManagement();
+                    } else if (sectionName === 'clients') {
+                        initializeClientManagement();
+                    } else if (sectionName === 'projects') {
+                        initializeProjectManagement();
+                    } else if (sectionName === 'invoices') {
+                        initializeInvoiceManagement();
+                    }
+                    
+                    console.log('Navigated to:', sectionName);
+                });
+            });
+            
+            // Handle logout
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    console.log('Logging out');
+                    hideDashboard();
+                });
+            }
+        }
+
+        // Media Management Functions
+        function initializeMediaManagement() {
+            console.log('Initializing media management');
+            
+            const dropZone = document.getElementById('dropZone');
+            const fileInput = document.getElementById('fileInput');
+            const refreshBtn = document.getElementById('refreshMediaBtn');
+            
+            // Load existing media
+            loadMediaData();
+            
+            // Drag and drop functionality
+            if (dropZone) {
+                dropZone.addEventListener('click', () => fileInput.click());
+                
+                dropZone.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    dropZone.classList.add('border-blue-500', 'bg-gray-700');
+                });
+                
+                dropZone.addEventListener('dragleave', (e) => {
+                    e.preventDefault();
+                    dropZone.classList.remove('border-blue-500', 'bg-gray-700');
+                });
+                
+                dropZone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    dropZone.classList.remove('border-blue-500', 'bg-gray-700');
+                    const files = e.dataTransfer.files;
+                    handleFileUpload(files);
+                });
+            }
+            
+            // File input change
+            if (fileInput) {
+                fileInput.addEventListener('change', (e) => {
+                    handleFileUpload(e.target.files);
+                });
+            }
+            
+            // Refresh button
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', loadMediaData);
+            }
+        }
+
+        function handleFileUpload(files) {
+            console.log('Handling file upload:', files.length, 'files');
+            
+            if (files.length === 0) return;
+            
+            const uploadProgress = document.getElementById('uploadProgress');
+            const progressBar = document.getElementById('progressBar');
+            const uploadStatus = document.getElementById('uploadStatus');
+            
+            // Show progress
+            uploadProgress.classList.remove('hidden');
+            
+            // Simulate file upload (in real app, this would upload to server)
+            let progress = 0;
+            const interval = setInterval(() => {
+                progress += 10;
+                progressBar.style.width = progress + '%';
+                uploadStatus.textContent = \`Uploading... \${progress}%\`;
+                
+                if (progress >= 100) {
+                    clearInterval(interval);
+                    
+                    // Process files
+                    Array.from(files).forEach(file => {
+                        const mediaItem = {
+                            id: Date.now() + Math.random(),
+                            name: file.name,
+                            type: file.type,
+                            size: file.size,
+                            url: URL.createObjectURL(file), // In real app, this would be server URL
+                            uploadDate: new Date().toISOString()
+                        };
+                        
+                        // Save to localStorage (in real app, this would save to server)
+                        const existingMedia = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
+                        existingMedia.push(mediaItem);
+                        localStorage.setItem('dlg_admin_media', JSON.stringify(existingMedia));
+                    });
+                    
+                    // Hide progress and refresh media grid
+                    setTimeout(() => {
+                        uploadProgress.classList.add('hidden');
+                        progressBar.style.width = '0%';
+                        uploadStatus.textContent = 'Uploading...';
+                        loadMediaData();
+                        showNotification('Files uploaded successfully!', 'success');
+                    }, 500);
+                }
+            }, 100);
+        }
+
+        function loadMediaData() {
+            console.log('Loading media data');
+            
+            const mediaGrid = document.getElementById('mediaGrid');
+            const emptyState = document.getElementById('emptyMediaState');
+            
+            // Get media from localStorage (in real app, this would fetch from server)
+            const media = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
+            
+            if (media.length === 0) {
+                mediaGrid.innerHTML = '';
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            
+            emptyState.classList.add('hidden');
+            
+            // Generate media grid HTML
+            mediaGrid.innerHTML = media.map(item => \`
+                <div class="bg-gray-700 rounded-lg p-3 hover:bg-gray-600 transition-colors group">
+                    <div class="aspect-square bg-gray-800 rounded mb-2 flex items-center justify-center overflow-hidden">
+                        \${item.type.startsWith('image/') 
+                            ? \`<img src="\${item.url}" alt="\${item.name}" class="w-full h-full object-cover">\`
+                            : \`<i class="fas fa-file text-2xl text-gray-400"></i>\`
+                        }
+                    </div>
+                    <p class="text-white text-sm truncate">\${item.name}</p>
+                    <p class="text-gray-400 text-xs">\${formatFileSize(item.size)}</p>
+                    <div class="mt-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onclick="setAsLogo('\${item.id}')" class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">
+                            Set Logo
+                        </button>
+                        <button onclick="deleteMedia('\${item.id}')" class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            \`).join('');
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function setAsLogo(mediaId) {
+            console.log('Setting logo:', mediaId);
+            
+            const media = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
+            const selectedMedia = media.find(item => item.id == mediaId);
+            
+            if (selectedMedia) {
+                localStorage.setItem('dlg_admin_current_logo', JSON.stringify(selectedMedia));
+                updateCurrentLogoDisplay(selectedMedia);
+                showNotification('Logo updated successfully!', 'success');
+            }
+        }
+
+        function deleteMedia(mediaId) {
+            console.log('Deleting media:', mediaId);
+            
+            if (!confirm('Are you sure you want to delete this file?')) return;
+            
+            const media = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
+            const updatedMedia = media.filter(item => item.id != mediaId);
+            
+            localStorage.setItem('dlg_admin_media', JSON.stringify(updatedMedia));
+            
+            // Check if deleted file was the current logo
+            const currentLogo = JSON.parse(localStorage.getItem('dlg_admin_current_logo') || 'null');
+            if (currentLogo && currentLogo.id == mediaId) {
+                localStorage.removeItem('dlg_admin_current_logo');
+                updateCurrentLogoDisplay(null);
+            }
+            
+            loadMediaData();
+            showNotification('File deleted successfully!', 'success');
+        }
+
+        function updateCurrentLogoDisplay(logoData) {
+            const display = document.getElementById('currentLogoDisplay');
+            
+            if (logoData && logoData.type.startsWith('image/')) {
+                display.innerHTML = \`
+                    <div class="w-16 h-16 bg-gray-700 rounded-lg overflow-hidden">
+                        <img src="\${logoData.url}" alt="\${logoData.name}" class="w-full h-full object-cover">
+                    </div>
+                    <div>
+                        <p class="text-white font-medium">\${logoData.name}</p>
+                        <p class="text-gray-400 text-sm">Current logo • \${formatFileSize(logoData.size)}</p>
+                    </div>
+                \`;
+            } else {
+                display.innerHTML = \`
+                    <div class="w-16 h-16 bg-gray-700 rounded-lg flex items-center justify-center">
+                        <i class="fas fa-image text-gray-400"></i>
+                    </div>
+                    <div>
+                        <p class="text-gray-400">No logo set</p>
+                        <p class="text-gray-500 text-sm">Upload and set a logo from the media library</p>
+                    </div>
+                \`;
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.className = \`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 translate-x-full\`;
+            
+            // Set color based on type
+            const colors = {
+                success: 'bg-green-600',
+                error: 'bg-red-600',
+                info: 'bg-blue-600',
+                warning: 'bg-yellow-600'
+            };
+            notification.className += ' ' + colors[type];
+            
+            notification.innerHTML = \`
+                <div class="flex items-center">
+                    <i class="fas fa-\${type === 'success' ? 'check-circle' : type === 'error' ? 'times-circle' : 'info-circle'} mr-2"></i>
+                    <span>\${message}</span>
+                </div>
+            \`;
+            
+            document.body.appendChild(notification);
+            
+            // Animate in
+            setTimeout(() => notification.classList.remove('translate-x-full'), 100);
+            
+            // Animate out and remove
+            setTimeout(() => {
+                notification.classList.add('translate-x-full');
+                setTimeout(() => document.body.removeChild(notification), 300);
+            }, 3000);
+        }
+
+        // Load current logo on dashboard show
+        function loadCurrentLogo() {
+            const currentLogo = JSON.parse(localStorage.getItem('dlg_admin_current_logo') || 'null');
+            updateCurrentLogoDisplay(currentLogo);
+        }
+
+        // Dashboard stats loading
+        async function loadDashboardStats() {
+            try {
+                const response = await fetch('/api/dashboard/stats', {
+                    headers: {
+                        'X-Tenant-ID': '1' // Default tenant for now
+                    }
+                });
+                
+                if (response.ok) {
+                    const stats = await response.json();
+                    
+                    // Update main dashboard stats
+                    const totalClientsEl = document.getElementById('totalClients');
+                    const activeProjectsEl = document.getElementById('activeProjects');
+                    const pendingInvoicesEl = document.getElementById('pendingInvoices');
+                    const totalRevenueEl = document.getElementById('totalRevenue');
+                    
+                    if (totalClientsEl) totalClientsEl.textContent = stats.clients;
+                    if (activeProjectsEl) activeProjectsEl.textContent = stats.projectStats.in_progress;
+                    if (pendingInvoicesEl) pendingInvoicesEl.textContent = stats.invoiceStats.pending + stats.invoiceStats.overdue;
+                    if (totalRevenueEl) totalRevenueEl.textContent = '$' + (stats.revenue.paid / 1000).toFixed(1) + 'k';
+                    
+                    // Update project stats if on projects page
+                    const planningCountEl = document.getElementById('planningCount');
+                    const progressCountEl = document.getElementById('progressCount');
+                    const reviewCountEl = document.getElementById('reviewCount');
+                    const completedCountEl = document.getElementById('completedCount');
+                    
+                    if (planningCountEl) planningCountEl.textContent = stats.projectStats.planned;
+                    if (progressCountEl) progressCountEl.textContent = stats.projectStats.in_progress;
+                    if (reviewCountEl) reviewCountEl.textContent = stats.projectStats.review;
+                    if (completedCountEl) completedCountEl.textContent = stats.projectStats.completed;
+                    
+                    // Update invoice stats if on invoices page
+                    const draftInvoicesEl = document.getElementById('draftInvoices');
+                    const sentInvoicesEl = document.getElementById('sentInvoices');
+                    const overdueInvoicesEl = document.getElementById('overdueInvoices');
+                    const paidInvoicesEl = document.getElementById('paidInvoices');
+                    
+                    if (draftInvoicesEl) draftInvoicesEl.textContent = stats.invoiceStats.draft;
+                    if (sentInvoicesEl) sentInvoicesEl.textContent = stats.invoiceStats.pending;
+                    if (overdueInvoicesEl) overdueInvoicesEl.textContent = stats.invoiceStats.overdue;
+                    if (paidInvoicesEl) paidInvoicesEl.textContent = stats.invoiceStats.paid;
+                } else {
+                    console.error('Failed to load dashboard stats');
+                }
+            } catch (error) {
+                console.error('Dashboard API error:', error);
+            }
+        }
+
+        // Client Management Functions
+        let editingClientId = null;
+
+        function initializeClientManagement() {
+            console.log('Initializing client management');
+            
+            const addClientBtn = document.getElementById('addClientBtn');
+            const clientSearch = document.getElementById('clientSearch');
+            const clientStatusFilter = document.getElementById('clientStatusFilter');
+            const clientForm = document.getElementById('clientForm');
+            const clientModal = document.getElementById('clientModal');
+            const cancelClientBtn = document.getElementById('cancelClientBtn');
+            
+            // Load clients
+            loadClientsData();
+            
+            // Add client button
+            if (addClientBtn) {
+                addClientBtn.addEventListener('click', () => openClientModal());
+            }
+            
+            // Search and filter
+            if (clientSearch) {
+                clientSearch.addEventListener('input', filterClients);
+            }
+            if (clientStatusFilter) {
+                clientStatusFilter.addEventListener('change', filterClients);
+            }
+            
+            // Client form
+            if (clientForm) {
+                clientForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    saveClient();
+                });
+            }
+            
+            // Cancel button
+            if (cancelClientBtn) {
+                cancelClientBtn.addEventListener('click', closeClientModal);
+            }
+            
+            // Modal overlay click
+            if (clientModal) {
+                clientModal.addEventListener('click', (e) => {
+                    if (e.target === clientModal) closeClientModal();
+                });
+            }
+        }
+
+        async function loadClientsData() {
+            console.log('Loading clients data');
+            
+            const tableBody = document.getElementById('clientsTableBody');
+            const emptyState = document.getElementById('emptyClientsState');
+            
+            try {
+                const response = await fetch('/api/clients', {
+                    headers: {
+                        'X-Tenant-ID': '1' // Default tenant for now
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load clients');
+                }
+                
+                const clients = await response.json();
+                
+                if (clients.length === 0) {
+                    tableBody.innerHTML = '';
+                    emptyState.classList.remove('hidden');
+                    return;
+                }
+                
+                emptyState.classList.add('hidden');
+                
+                // Generate table rows
+                tableBody.innerHTML = clients.map(client => \`
+                    <tr class="hover:bg-gray-700">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="flex items-center">
+                                <div class="flex-shrink-0 h-10 w-10">
+                                    <div class="h-10 w-10 rounded-full bg-gray-600 flex items-center justify-center">
+                                        <span class="text-sm font-medium text-white">\${client.name.charAt(0).toUpperCase()}</span>
+                                    </div>
+                                </div>
+                                <div class="ml-4">
+                                    <div class="text-sm font-medium text-white">\${client.name}</div>
+                                    <div class="text-sm text-gray-400">\${client.contact_name}</div>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="text-sm text-white">\${client.contact_email}</div>
+                            \${client.contact_phone ? \`<div class="text-sm text-gray-400">\${client.contact_phone}</div>\` : ''}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full \${getStatusColor(client.status)}">
+                                \${client.status.charAt(0).toUpperCase() + client.status.slice(1)}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
+                            \${client.project_count || 0} projects
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <div class="flex space-x-2">
+                                <button onclick="editClient('\${client.id}')" class="text-blue-400 hover:text-blue-300">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button onclick="deleteClient('\${client.id}')" class="text-red-400 hover:text-red-300">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                \`).join('');
+                
+                // Also update dashboard stats
+                loadDashboardStats();
+                
+            } catch (error) {
+                console.error('Error loading clients:', error);
+                showNotification('Failed to load clients data', 'error');
+                tableBody.innerHTML = '';
+                emptyState.classList.remove('hidden');
+            }
+        }
+
+        function getStatusColor(status) {
+            const colors = {
+                active: 'bg-green-100 text-green-800',
+                inactive: 'bg-gray-100 text-gray-800', 
+                pending: 'bg-yellow-100 text-yellow-800'
+            };
+            return colors[status] || colors.pending;
+        }
+
+        function filterClients() {
+            const search = document.getElementById('clientSearch').value.toLowerCase();
+            const statusFilter = document.getElementById('clientStatusFilter').value;
+            const clients = JSON.parse(localStorage.getItem('dlg_admin_clients') || '[]');
+            
+            let filteredClients = clients;
+            
+            // Apply search filter
+            if (search) {
+                filteredClients = filteredClients.filter(client => 
+                    client.company.toLowerCase().includes(search) ||
+                    client.name.toLowerCase().includes(search) ||
+                    client.email.toLowerCase().includes(search)
+                );
+            }
+            
+            // Apply status filter
+            if (statusFilter) {
+                filteredClients = filteredClients.filter(client => client.status === statusFilter);
+            }
+            
+            // Update table with filtered results
+            const tableBody = document.getElementById('clientsTableBody');
+            const emptyState = document.getElementById('emptyClientsState');
+            
+            if (filteredClients.length === 0) {
+                tableBody.innerHTML = '';
+                emptyState.classList.remove('hidden');
+            } else {
+                emptyState.classList.add('hidden');
+                // Re-render with filtered data (reuse the same rendering logic)
+                localStorage.setItem('dlg_admin_clients_filtered', JSON.stringify(filteredClients));
+                loadClientsData();
+                localStorage.removeItem('dlg_admin_clients_filtered');
+            }
+        }
+
+        function openClientModal(clientData = null) {
+            const modal = document.getElementById('clientModal');
+            const title = document.getElementById('clientModalTitle');
+            const form = document.getElementById('clientForm');
+            
+            editingClientId = clientData ? clientData.id : null;
+            title.textContent = clientData ? 'Edit Client' : 'Add Client';
+            
+            // Reset form
+            form.reset();
+            
+            // Populate form if editing
+            if (clientData) {
+                document.getElementById('clientCompany').value = clientData.name || '';
+                document.getElementById('clientName').value = clientData.contact_name || '';
+                document.getElementById('clientEmail').value = clientData.contact_email || '';
+                document.getElementById('clientPhone').value = clientData.contact_phone || '';
+                document.getElementById('clientStatus').value = clientData.status || 'active';
+                document.getElementById('clientNotes').value = clientData.notes || '';
+            }
+            
+            modal.classList.remove('hidden');
+        }
+
+        function closeClientModal() {
+            document.getElementById('clientModal').classList.add('hidden');
+            editingClientId = null;
+        }
+
+        async function saveClient() {
+            const formData = {
+                name: document.getElementById('clientCompany').value.trim(),
+                contact_name: document.getElementById('clientName').value.trim(),
+                contact_email: document.getElementById('clientEmail').value.trim(),
+                contact_phone: document.getElementById('clientPhone').value.trim(),
+                status: document.getElementById('clientStatus').value || 'active'
+            };
+            
+            // Validate required fields
+            if (!formData.name || !formData.contact_name || !formData.contact_email) {
+                showNotification('Please fill in all required fields', 'error');
+                return;
+            }
+            
+            try {
+                let response;
+                if (editingClientId) {
+                    // Update existing client
+                    response = await fetch(\`/api/clients/\${editingClientId}\`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Tenant-ID': '1'
+                        },
+                        body: JSON.stringify(formData)
+                    });
+                } else {
+                    // Add new client
+                    response = await fetch('/api/clients', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Tenant-ID': '1'
+                        },
+                        body: JSON.stringify(formData)
+                    });
+                }
+                
+                if (response.ok) {
+                    // Close modal and refresh data
+                    closeClientModal();
+                    loadClientsData();
+                    
+                    showNotification(editingClientId ? 'Client updated successfully!' : 'Client added successfully!', 'success');
+                } else {
+                    throw new Error('Failed to save client');
+                }
+            } catch (error) {
+                console.error('Error saving client:', error);
+                showNotification('Failed to save client', 'error');
+            }
+        }
+
+        async function editClient(clientId) {
+            try {
+                const response = await fetch(\`/api/clients\`, {
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (response.ok) {
+                    const clients = await response.json();
+                    const client = clients.find(c => c.id == clientId);
+                    
+                    if (client) {
+                        openClientModal(client);
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching client:', error);
+                showNotification('Failed to load client data', 'error');
+            }
+        }
+
+        async function deleteClient(clientId) {
+            if (!confirm('Are you sure you want to delete this client?')) return;
+            
+            try {
+                const response = await fetch(\`/api/clients/\${clientId}\`, {
+                    method: 'DELETE',
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (response.ok) {
+                    loadClientsData();
+                    showNotification('Client deleted successfully!', 'success');
+                } else {
+                    throw new Error('Failed to delete client');
+                }
+            } catch (error) {
+                console.error('Error deleting client:', error);
+                showNotification('Failed to delete client', 'error');
+            }
+        }
+
+        // Project Management Functions
+        function initializeProjectManagement() {
+            console.log('Initializing project management');
+            loadProjectsData();
+            
+            const addProjectBtn = document.getElementById('addProjectBtn');
+            if (addProjectBtn) {
+                addProjectBtn.addEventListener('click', () => {
+                    showNotification('Project creation feature coming soon!', 'info');
+                });
+            }
+        }
+
+        async function loadProjectsData() {
+            try {
+                const response = await fetch('/api/projects', {
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load projects');
+                }
+                
+                const projects = await response.json();
+                
+                // Update counts
+                const counts = { planned: 0, in_progress: 0, review: 0, completed: 0, on_hold: 0 };
+                projects.forEach(project => {
+                    if (counts[project.status] !== undefined) counts[project.status]++;
+                });
+                
+                const planningCountEl = document.getElementById('planningCount');
+                const progressCountEl = document.getElementById('progressCount'); 
+                const reviewCountEl = document.getElementById('reviewCount');
+                const completedCountEl = document.getElementById('completedCount');
+                
+                if (planningCountEl) planningCountEl.textContent = counts.planned;
+                if (progressCountEl) progressCountEl.textContent = counts.in_progress;
+                if (reviewCountEl) reviewCountEl.textContent = counts.review;
+                if (completedCountEl) completedCountEl.textContent = counts.completed;
+                
+                const grid = document.getElementById('projectsGrid');
+                const emptyState = document.getElementById('emptyProjectsState');
+                
+                if (projects.length === 0) {
+                    grid.innerHTML = '';
+                    emptyState.classList.remove('hidden');
+                } else {
+                    emptyState.classList.add('hidden');
+                    
+                    // Render projects grid
+                    grid.innerHTML = projects.map(project => \`
+                        <div class="bg-gray-700 rounded-lg p-6 border border-gray-600">
+                            <div class="flex justify-between items-start mb-4">
+                                <div>
+                                    <h3 class="text-lg font-semibold text-white mb-2">\${project.name}</h3>
+                                    <p class="text-gray-300 text-sm mb-2">\${project.client_name || 'No client'}</p>
+                                    <span class="px-2 py-1 text-xs font-semibold rounded-full \${getProjectStatusColor(project.status)}">
+                                        \${project.status.replace('_', ' ').toUpperCase()}
+                                    </span>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-white font-semibold">$\${(project.value_cents / 100).toLocaleString()}</p>
+                                    <p class="text-gray-400 text-sm">Due: \${new Date(project.due_date).toLocaleDateString()}</p>
+                                </div>
+                            </div>
+                            <p class="text-gray-400 text-sm mb-4">\${project.description}</p>
+                            <div class="flex justify-between items-center">
+                                <div class="text-sm text-gray-500">
+                                    Started: \${new Date(project.start_date).toLocaleDateString()}
+                                </div>
+                                <div class="flex space-x-2">
+                                    <button onclick="editProject(\${project.id})" class="text-blue-400 hover:text-blue-300">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button onclick="viewProject(\${project.id})" class="text-green-400 hover:text-green-300">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    \`).join('');
+                }
+                
+                // Also refresh dashboard stats
+                loadDashboardStats();
+                
+            } catch (error) {
+                console.error('Error loading projects:', error);
+                showNotification('Failed to load projects', 'error');
+                
+                const grid = document.getElementById('projectsGrid');
+                const emptyState = document.getElementById('emptyProjectsState');
+                grid.innerHTML = '';
+                emptyState.classList.remove('hidden');
+            }
+        }
+        
+        function getProjectStatusColor(status) {
+            const colors = {
+                planned: 'bg-blue-100 text-blue-800',
+                in_progress: 'bg-yellow-100 text-yellow-800',
+                review: 'bg-purple-100 text-purple-800',
+                completed: 'bg-green-100 text-green-800',
+                on_hold: 'bg-gray-100 text-gray-800'
+            };
+            return colors[status] || colors.planned;
+        }
+        
+        function editProject(projectId) {
+            showNotification('Project editing feature coming soon!', 'info');
+        }
+        
+        function viewProject(projectId) {
+            showNotification('Project details view coming soon!', 'info');
+        }
+
+        // Invoice Management Functions
+        function initializeInvoiceManagement() {
+            console.log('Initializing invoice management');
+            loadInvoicesData();
+            
+            const addInvoiceBtn = document.getElementById('addInvoiceBtn');
+            if (addInvoiceBtn) {
+                addInvoiceBtn.addEventListener('click', () => {
+                    showNotification('Invoice creation feature coming soon!', 'info');
+                });
+            }
+        }
+
+        async function loadInvoicesData() {
+            try {
+                const response = await fetch('/api/invoices', {
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load invoices');
+                }
+                
+                const invoices = await response.json();
+                
+                // Update counts
+                const counts = { draft: 0, pending: 0, overdue: 0, paid: 0 };
+                invoices.forEach(invoice => {
+                    if (counts[invoice.status] !== undefined) counts[invoice.status]++;
+                });
+                
+                const draftInvoicesEl = document.getElementById('draftInvoices');
+                const sentInvoicesEl = document.getElementById('sentInvoices');
+                const overdueInvoicesEl = document.getElementById('overdueInvoices');
+                const paidInvoicesEl = document.getElementById('paidInvoices');
+                
+                if (draftInvoicesEl) draftInvoicesEl.textContent = counts.draft;
+                if (sentInvoicesEl) sentInvoicesEl.textContent = counts.pending;
+                if (overdueInvoicesEl) overdueInvoicesEl.textContent = counts.overdue;
+                if (paidInvoicesEl) paidInvoicesEl.textContent = counts.paid;
+                
+                const tableBody = document.getElementById('invoicesTableBody');
+                const emptyState = document.getElementById('emptyInvoicesState');
+                
+                if (invoices.length === 0) {
+                    tableBody.innerHTML = '';
+                    emptyState.classList.remove('hidden');
+                } else {
+                    emptyState.classList.add('hidden');
+                    
+                    // Render invoices table
+                    tableBody.innerHTML = invoices.map(invoice => \`
+                        <tr class="hover:bg-gray-700">
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm font-medium text-white">\${invoice.number}</div>
+                                <div class="text-sm text-gray-400">\${new Date(invoice.created_at).toLocaleDateString()}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm text-white">\${invoice.client_name || 'Unknown Client'}</div>
+                                <div class="text-sm text-gray-400">\${invoice.project_name || 'No project'}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
+                                $\${(invoice.amount_cents / 100).toLocaleString()}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full \${getInvoiceStatusColor(invoice.status)}">
+                                    \${invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
+                                \${new Date(invoice.due_date).toLocaleDateString()}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                <div class="flex space-x-2">
+                                    <button onclick="viewInvoice(\${invoice.id})" class="text-blue-400 hover:text-blue-300">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                    <button onclick="editInvoice(\${invoice.id})" class="text-green-400 hover:text-green-300">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button onclick="downloadInvoice(\${invoice.id})" class="text-purple-400 hover:text-purple-300">
+                                        <i class="fas fa-download"></i>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    \`).join('');
+                }
+                
+                // Also refresh dashboard stats
+                loadDashboardStats();
+                
+            } catch (error) {
+                console.error('Error loading invoices:', error);
+                showNotification('Failed to load invoices', 'error');
+                
+                const tableBody = document.getElementById('invoicesTableBody');
+                const emptyState = document.getElementById('emptyInvoicesState');
+                tableBody.innerHTML = '';
+                emptyState.classList.remove('hidden');
+            }
+        }
+        
+        function getInvoiceStatusColor(status) {
+            const colors = {
+                draft: 'bg-gray-100 text-gray-800',
+                pending: 'bg-yellow-100 text-yellow-800',
+                paid: 'bg-green-100 text-green-800',
+                overdue: 'bg-red-100 text-red-800'
+            };
+            return colors[status] || colors.draft;
+        }
+        
+        function viewInvoice(invoiceId) {
+            showNotification('Invoice details view coming soon!', 'info');
+        }
+        
+        function editInvoice(invoiceId) {
+            showNotification('Invoice editing feature coming soon!', 'info');
+        }
+        
+        function downloadInvoice(invoiceId) {
+            showNotification('Invoice download feature coming soon!', 'info');
+        }
     </script>
 </body>
 </html>`);
