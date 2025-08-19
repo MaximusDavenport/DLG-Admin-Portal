@@ -1,387 +1,4 @@
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
-import { serveStatic } from 'hono/cloudflare-workers'
-
-type Bindings = {
-  DB: D1Database
-  MEDIA_BUCKET: R2Bucket
-  JWT_SECRET?: string
-}
-
-type Variables = {
-  user?: {
-    userId: number
-    email: string
-    name: string
-    role: 'admin' | 'project_manager' | 'staff' | 'client'
-    tenant_id: number
-    tenant_key: string
-  }
-}
-
-const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
-
-// Enable CORS
-app.use('/api/*', cors())
-
-// Media API - all media endpoints before tenant middleware since they don't need tenant validation
-
-// Serve media files
-app.get('/api/media/uploads/:filename', async (c) => {
-  const { env } = c
-  const filename = c.req.param('filename')
-  const key = `uploads/${filename}`
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    const object = await env.MEDIA_BUCKET.get(key)
-    
-    if (!object) {
-      return c.notFound()
-    }
-    
-    return new Response(object.body, {
-      headers: {
-        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
-        'Cache-Control': 'public, max-age=31536000',
-        'ETag': object.etag,
-      }
-    })
-  } catch (error) {
-    console.error('Media serve error:', error)
-    return c.json({ error: 'Failed to serve file' }, 500)
-  }
-})
-
-// Media upload API
-app.post('/api/media/upload', async (c) => {
-  const { env } = c
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    const formData = await c.req.formData()
-    const file = formData.get('file') as File
-    
-    if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
-    }
-    
-    // Generate unique filename
-    const ext = file.name.split('.').pop()
-    const timestamp = Date.now()
-    const random = Math.random().toString(36).substring(7)
-    const key = `uploads/${timestamp}-${random}.${ext}`
-    
-    const arrayBuffer = await file.arrayBuffer()
-    
-    await env.MEDIA_BUCKET.put(key, arrayBuffer, {
-      httpMetadata: {
-        contentType: file.type,
-      },
-    })
-    
-    return c.json({ 
-      key, 
-      url: `/api/media/uploads/${key.replace('uploads/', '')}`,
-      filename: file.name,
-      originalName: file.name,
-      size: file.size,
-      type: file.type,
-      uploadedAt: new Date().toISOString()
-    })
-  } catch (error) {
-    console.error('Upload error:', error)
-    return c.json({ error: 'Upload failed' }, 500)
-  }
-})
-
-// List uploaded media files
-app.get('/api/media', async (c) => {
-  const { env } = c
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    const objects = await env.MEDIA_BUCKET.list({ prefix: 'uploads/' })
-    
-    const files = objects.objects.map(obj => ({
-      key: obj.key,
-      url: `/api/media/uploads/${obj.key.replace('uploads/', '')}`,
-      size: obj.size,
-      uploaded: obj.uploaded,
-      etag: obj.etag
-    }))
-    
-    return c.json(files)
-  } catch (error) {
-    console.error('Media list error:', error)
-    return c.json({ error: 'Failed to list files' }, 500)
-  }
-})
-
-// Delete media file
-app.delete('/api/media/uploads/:filename', async (c) => {
-  const { env } = c
-  const filename = c.req.param('filename')
-  const key = `uploads/${filename}`
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    await env.MEDIA_BUCKET.delete(key)
-    return c.json({ message: 'File deleted successfully' })
-  } catch (error) {
-    console.error('Media delete error:', error)
-    return c.json({ error: 'Failed to delete file' }, 500)
-  }
-})
-
-// Tenant middleware to get tenant from header (for other API routes)
-app.use('/api/*', async (c, next) => {
-  const tenantId = c.req.header('X-Tenant-ID')
-  if (!tenantId) {
-    return c.json({ error: 'Tenant ID required' }, 400)
-  }
-  c.set('tenant_id', parseInt(tenantId))
-  await next()
-})
-
-// API Routes
-
-// Dashboard stats
-app.get('/api/dashboard/stats', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  
-  try {
-    // Get counts
-    const clientsResult = await env.DB.prepare('SELECT COUNT(*) as count FROM clients WHERE tenant_id = ?').bind(tenant_id).first()
-    const projectsResult = await env.DB.prepare('SELECT COUNT(*) as count FROM projects WHERE tenant_id = ?').bind(tenant_id).first()
-    const invoicesResult = await env.DB.prepare('SELECT COUNT(*) as count FROM invoices WHERE tenant_id = ?').bind(tenant_id).first()
-    
-    // Get project status counts
-    const projectStats = await env.DB.prepare(`
-      SELECT 
-        status,
-        COUNT(*) as count
-      FROM projects 
-      WHERE tenant_id = ? 
-      GROUP BY status
-    `).bind(tenant_id).all()
-    
-    // Get invoice status counts
-    const invoiceStats = await env.DB.prepare(`
-      SELECT 
-        status,
-        COUNT(*) as count
-      FROM invoices 
-      WHERE tenant_id = ? 
-      GROUP BY status
-    `).bind(tenant_id).all()
-    
-    // Get revenue data
-    const revenueResult = await env.DB.prepare(`
-      SELECT 
-        SUM(CASE WHEN status = 'paid' THEN amount_cents ELSE 0 END) as paid_total,
-        SUM(CASE WHEN status = 'pending' THEN amount_cents ELSE 0 END) as pending_total,
-        SUM(CASE WHEN status = 'overdue' THEN amount_cents ELSE 0 END) as overdue_total
-      FROM invoices 
-      WHERE tenant_id = ?
-    `).bind(tenant_id).first()
-    
-    const projectCounts = {
-      planned: 0,
-      in_progress: 0,
-      review: 0,
-      completed: 0,
-      on_hold: 0
-    }
-    
-    projectStats.results.forEach(row => {
-      projectCounts[row.status] = row.count
-    })
-    
-    const invoiceCounts = {
-      draft: 0,
-      pending: 0,
-      paid: 0,
-      overdue: 0
-    }
-    
-    invoiceStats.results.forEach(row => {
-      invoiceCounts[row.status] = row.count
-    })
-    
-    return c.json({
-      clients: clientsResult.count,
-      projects: projectsResult.count,
-      invoices: invoicesResult.count,
-      projectStats: projectCounts,
-      invoiceStats: invoiceCounts,
-      revenue: {
-        paid: (revenueResult.paid_total || 0) / 100,
-        pending: (revenueResult.pending_total || 0) / 100,
-        overdue: (revenueResult.overdue_total || 0) / 100
-      }
-    })
-  } catch (error) {
-    console.error('Dashboard stats error:', error)
-    return c.json({ error: 'Failed to load dashboard stats' }, 500)
-  }
-})
-
-// Clients API
-app.get('/api/clients', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  
-  try {
-    const result = await env.DB.prepare(`
-      SELECT 
-        c.*,
-        COUNT(p.id) as project_count
-      FROM clients c
-      LEFT JOIN projects p ON p.client_id = c.id AND p.tenant_id = c.tenant_id
-      WHERE c.tenant_id = ?
-      GROUP BY c.id
-      ORDER BY c.created_at DESC
-    `).bind(tenant_id).all()
-    
-    return c.json(result.results || [])
-  } catch (error) {
-    console.error('Clients API error:', error)
-    return c.json({ error: 'Failed to load clients' }, 500)
-  }
-})
-
-app.post('/api/clients', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  
-  try {
-    const data = await c.req.json()
-    const { name, contact_name, contact_email, contact_phone, status } = data
-    
-    const result = await env.DB.prepare(`
-      INSERT INTO clients (tenant_id, name, contact_name, contact_email, contact_phone, status)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(tenant_id, name, contact_name, contact_email, contact_phone, status || 'active').run()
-    
-    return c.json({ id: result.meta.last_row_id, ...data }, 201)
-  } catch (error) {
-    console.error('Create client error:', error)
-    return c.json({ error: 'Failed to create client' }, 500)
-  }
-})
-
-app.put('/api/clients/:id', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  const client_id = c.req.param('id')
-  
-  try {
-    const data = await c.req.json()
-    const { name, contact_name, contact_email, contact_phone, status } = data
-    
-    const result = await env.DB.prepare(`
-      UPDATE clients 
-      SET name = ?, contact_name = ?, contact_email = ?, contact_phone = ?, status = ?
-      WHERE id = ? AND tenant_id = ?
-    `).bind(name, contact_name, contact_email, contact_phone, status || 'active', client_id, tenant_id).run()
-    
-    if (result.changes === 0) {
-      return c.json({ error: 'Client not found' }, 404)
-    }
-    
-    return c.json({ id: client_id, ...data })
-  } catch (error) {
-    console.error('Update client error:', error)
-    return c.json({ error: 'Failed to update client' }, 500)
-  }
-})
-
-app.delete('/api/clients/:id', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  const client_id = c.req.param('id')
-  
-  try {
-    const result = await env.DB.prepare(`
-      DELETE FROM clients WHERE id = ? AND tenant_id = ?
-    `).bind(client_id, tenant_id).run()
-    
-    if (result.changes === 0) {
-      return c.json({ error: 'Client not found' }, 404)
-    }
-    
-    return c.json({ message: 'Client deleted successfully' })
-  } catch (error) {
-    console.error('Delete client error:', error)
-    return c.json({ error: 'Failed to delete client' }, 500)
-  }
-})
-
-// Projects API
-app.get('/api/projects', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  
-  try {
-    const result = await env.DB.prepare(`
-      SELECT 
-        p.*,
-        c.name as client_name
-      FROM projects p
-      LEFT JOIN clients c ON c.id = p.client_id
-      WHERE p.tenant_id = ?
-      ORDER BY p.created_at DESC
-    `).bind(tenant_id).all()
-    
-    return c.json(result.results || [])
-  } catch (error) {
-    console.error('Projects API error:', error)
-    return c.json({ error: 'Failed to load projects' }, 500)
-  }
-})
-
-// Invoices API
-app.get('/api/invoices', async (c) => {
-  const { env } = c
-  const tenant_id = c.get('tenant_id')
-  
-  try {
-    const result = await env.DB.prepare(`
-      SELECT 
-        i.*,
-        c.name as client_name,
-        p.name as project_name
-      FROM invoices i
-      LEFT JOIN clients c ON c.id = i.client_id
-      LEFT JOIN projects p ON p.id = i.project_id
-      WHERE i.tenant_id = ?
-      ORDER BY i.created_at DESC
-    `).bind(tenant_id).all()
-    
-    return c.json(result.results || [])
-  } catch (error) {
-    console.error('Invoices API error:', error)
-    return c.json({ error: 'Failed to load invoices' }, 500)
-  }
-})
-
-// Main DLG Admin Portal - Working minimal version
-app.get('/', (c) => {
-  return c.html(`<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1136,7 +753,7 @@ app.get('/', (c) => {
                                     </div>
                                     <div>
                                         <label class="block text-sm font-medium text-gray-300 mb-2">Address</label>
-                                        <textarea class="w-full bg-gray-700 text-white rounded px-3 py-2 h-20">123 Business Ave\\nSuite 100\\nCity, State 12345</textarea>
+                                        <textarea class="w-full bg-gray-700 text-white rounded px-3 py-2 h-20">123 Business Ave\nSuite 100\nCity, State 12345</textarea>
                                     </div>
                                     <button class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded">
                                         Save Changes
@@ -1199,24 +816,15 @@ app.get('/', (c) => {
             const closeBtn = document.getElementById('closeModal');
             const loginForm = document.getElementById('loginForm');
             
-            console.log('🔍 Debug: Elements found:', {loginBtn: !!loginBtn, modal: !!modal});
-            
-            // Open modal with multiple event types to ensure it works
-            if (loginBtn && modal) {
-                // Try both click and mousedown events
-                ['click', 'mousedown'].forEach(eventType => {
-                    loginBtn.addEventListener(eventType, function(e) {
-                        console.log('🔥 LOGIN TRIGGERED:', eventType, e);
-                        e.preventDefault();
-                        e.stopPropagation();
+            // Open modal
+            if (loginBtn) {
+                loginBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    console.log('Login button clicked');
+                    if (modal) {
                         modal.classList.remove('hidden');
-                        console.log('✅ Modal opened');
-                    }, true); // Use capture phase
+                    }
                 });
-                
-                console.log('✅ Login events attached');
-            } else {
-                console.error('❌ Missing elements:', {loginBtn: !!loginBtn, modal: !!modal});
             }
             
             // Close modal
@@ -1425,7 +1033,7 @@ app.get('/', (c) => {
                 
                 // Upload files one by one
                 for (const file of fileArray) {
-                    uploadStatus.textContent = \`Uploading \${file.name}...\`;
+                    uploadStatus.textContent = `Uploading ${file.name}...`;
                     
                     const formData = new FormData();
                     formData.append('file', file);
@@ -1439,13 +1047,13 @@ app.get('/', (c) => {
                     });
                     
                     if (!response.ok) {
-                        throw new Error(\`Failed to upload \${file.name}\`);
+                        throw new Error(`Failed to upload ${file.name}`);
                     }
                     
                     completedFiles++;
                     const progress = Math.round((completedFiles / fileArray.length) * 100);
                     progressBar.style.width = progress + '%';
-                    uploadStatus.textContent = \`Uploaded \${completedFiles}/\${fileArray.length} files\`;
+                    uploadStatus.textContent = `Uploaded ${completedFiles}/${fileArray.length} files`;
                 }
                 
                 // Success - hide progress and refresh
@@ -1454,7 +1062,7 @@ app.get('/', (c) => {
                     progressBar.style.width = '0%';
                     uploadStatus.textContent = 'Uploading...';
                     loadMediaData();
-                    showNotification(\`Successfully uploaded \${fileArray.length} file(s)!\`, 'success');
+                    showNotification(`Successfully uploaded ${fileArray.length} file(s)!`, 'success');
                 }, 500);
                 
             } catch (error) {
@@ -1462,7 +1070,7 @@ app.get('/', (c) => {
                 uploadProgress.classList.add('hidden');
                 progressBar.style.width = '0%';
                 uploadStatus.textContent = 'Uploading...';
-                showNotification(\`Upload failed: \${error.message}\`, 'error');
+                showNotification(`Upload failed: ${error.message}`, 'error');
             }
         }
 
@@ -1496,7 +1104,7 @@ app.get('/', (c) => {
                 if (!currentLogo && media.length > 0) {
                     const firstImage = media.find(item => {
                         const filename = item.key.split('/').pop();
-                        return filename.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                        return filename.match(/.(jpg|jpeg|png|gif|webp)$/i);
                     });
                     
                     if (firstImage) {
@@ -1519,29 +1127,29 @@ app.get('/', (c) => {
                 // Generate media grid HTML
                 mediaGrid.innerHTML = media.map(item => {
                     const filename = item.key.split('/').pop();
-                    const isImage = filename.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                    const isImage = filename.match(/.(jpg|jpeg|png|gif|webp)$/i);
                     
-                    return \`
+                    return `
                         <div class="bg-gray-700 rounded-lg p-3 hover:bg-gray-600 transition-colors group">
                             <div class="aspect-square bg-gray-800 rounded mb-2 flex items-center justify-center overflow-hidden">
-                                \${isImage
-                                    ? \`<img src="\${item.url}" alt="\${filename}" class="w-full h-full object-cover">\`
-                                    : \`<i class="fas fa-file text-2xl text-gray-400"></i>\`
+                                ${isImage
+                                    ? `<img src="${item.url}" alt="${filename}" class="w-full h-full object-cover">`
+                                    : `<i class="fas fa-file text-2xl text-gray-400"></i>`
                                 }
                             </div>
-                            <p class="text-white text-sm truncate" title="\${filename}">\${filename}</p>
-                            <p class="text-gray-400 text-xs">\${formatFileSize(item.size)}</p>
-                            <p class="text-gray-500 text-xs">\${new Date(item.uploaded).toLocaleDateString()}</p>
+                            <p class="text-white text-sm truncate" title="${filename}">${filename}</p>
+                            <p class="text-gray-400 text-xs">${formatFileSize(item.size)}</p>
+                            <p class="text-gray-500 text-xs">${new Date(item.uploaded).toLocaleDateString()}</p>
                             <div class="mt-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onclick="setAsLogo('\${item.key}')" class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">
+                                <button onclick="setAsLogo('${item.key}')" class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">
                                     Set Logo
                                 </button>
-                                <button onclick="deleteMedia('\${item.key}')" class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">
+                                <button onclick="deleteMedia('${item.key}')" class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">
                                     Delete
                                 </button>
                             </div>
                         </div>
-                    \`;
+                    `;
                 }).join('');
                 
             } catch (error) {
@@ -1604,7 +1212,7 @@ app.get('/', (c) => {
             try {
                 // Extract filename from key (uploads/filename.ext -> filename.ext)
                 const filename = mediaKey.split('/').pop();
-                const response = await fetch(\`/api/media/uploads/\${filename}\`, {
+                const response = await fetch(`/api/media/uploads/${filename}`, {
                     method: 'DELETE',
                     headers: {
                         'X-Tenant-ID': '1'
@@ -1636,17 +1244,17 @@ app.get('/', (c) => {
             const display = document.getElementById('currentLogoDisplay');
             
             if (logoData && logoData.type.startsWith('image/')) {
-                display.innerHTML = \`
+                display.innerHTML = `
                     <div class="w-16 h-16 bg-gray-700 rounded-lg overflow-hidden">
-                        <img src="\${logoData.url}" alt="\${logoData.name}" class="w-full h-full object-cover">
+                        <img src="${logoData.url}" alt="${logoData.name}" class="w-full h-full object-cover">
                     </div>
                     <div>
-                        <p class="text-white font-medium">\${logoData.name}</p>
-                        <p class="text-gray-400 text-sm">Current logo • \${formatFileSize(logoData.size)}</p>
+                        <p class="text-white font-medium">${logoData.name}</p>
+                        <p class="text-gray-400 text-sm">Current logo • ${formatFileSize(logoData.size)}</p>
                     </div>
-                \`;
+                `;
             } else {
-                display.innerHTML = \`
+                display.innerHTML = `
                     <div class="w-16 h-16 bg-gray-700 rounded-lg flex items-center justify-center">
                         <i class="fas fa-image text-gray-400"></i>
                     </div>
@@ -1654,14 +1262,14 @@ app.get('/', (c) => {
                         <p class="text-gray-400">No logo set</p>
                         <p class="text-gray-500 text-sm">Upload and set a logo from the media library</p>
                     </div>
-                \`;
+                `;
             }
         }
 
         function showNotification(message, type = 'info') {
             // Create notification element
             const notification = document.createElement('div');
-            notification.className = \`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 translate-x-full\`;
+            notification.className = `fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 translate-x-full`;
             
             // Set color based on type
             const colors = {
@@ -1672,12 +1280,12 @@ app.get('/', (c) => {
             };
             notification.className += ' ' + colors[type];
             
-            notification.innerHTML = \`
+            notification.innerHTML = `
                 <div class="flex items-center">
-                    <i class="fas fa-\${type === 'success' ? 'check-circle' : type === 'error' ? 'times-circle' : 'info-circle'} mr-2"></i>
-                    <span>\${message}</span>
+                    <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'times-circle' : 'info-circle'} mr-2"></i>
+                    <span>${message}</span>
                 </div>
-            \`;
+            `;
             
             document.body.appendChild(notification);
             
@@ -1716,17 +1324,17 @@ app.get('/', (c) => {
             const logoContainer = document.getElementById('landingPageLogo');
             if (logoContainer) {
                 if (logoData && logoData.url && logoData.type && logoData.type.startsWith('image/')) {
-                    logoContainer.innerHTML = \`
+                    logoContainer.innerHTML = `
                         <div class="w-24 h-24 mx-auto mb-4 bg-gray-700 rounded-lg overflow-hidden">
-                            <img src="\${logoData.url}" alt="\${logoData.name || 'Logo'}" class="w-full h-full object-cover">
+                            <img src="${logoData.url}" alt="${logoData.name || 'Logo'}" class="w-full h-full object-cover">
                         </div>
-                    \`;
+                    `;
                 } else {
-                    logoContainer.innerHTML = \`
+                    logoContainer.innerHTML = `
                         <div class="w-24 h-24 mx-auto mb-4 bg-gray-700 rounded-lg flex items-center justify-center">
                             <i class="fas fa-building text-gray-400 text-2xl"></i>
                         </div>
-                    \`;
+                    `;
                 }
             }
         }
@@ -1736,17 +1344,17 @@ app.get('/', (c) => {
             const logoContainer = document.getElementById('loginModalLogo');
             if (logoContainer) {
                 if (logoData && logoData.url && logoData.type && logoData.type.startsWith('image/')) {
-                    logoContainer.innerHTML = \`
+                    logoContainer.innerHTML = `
                         <div class="w-16 h-16 mx-auto mb-3 bg-gray-700 rounded-lg overflow-hidden">
-                            <img src="\${logoData.url}" alt="\${logoData.name || 'Logo'}" class="w-full h-full object-cover">
+                            <img src="${logoData.url}" alt="${logoData.name || 'Logo'}" class="w-full h-full object-cover">
                         </div>
-                    \`;
+                    `;
                 } else {
-                    logoContainer.innerHTML = \`
+                    logoContainer.innerHTML = `
                         <div class="w-16 h-16 mx-auto mb-3 bg-gray-700 rounded-lg flex items-center justify-center">
                             <i class="fas fa-building text-gray-400"></i>
                         </div>
-                    \`;
+                    `;
                 }
             }
         }
@@ -1756,15 +1364,15 @@ app.get('/', (c) => {
             const headerLogo = document.querySelector('.navbar-brand-logo');
             if (headerLogo) {
                 if (logoData && logoData.url && logoData.type && logoData.type.startsWith('image/')) {
-                    headerLogo.innerHTML = \`
-                        <img src="\${logoData.url}" alt="\${logoData.name || 'Logo'}" class="w-8 h-8 mr-2 rounded object-cover">
+                    headerLogo.innerHTML = `
+                        <img src="${logoData.url}" alt="${logoData.name || 'Logo'}" class="w-8 h-8 mr-2 rounded object-cover">
                         <span class="text-xl font-semibold text-white">DLG Administration</span>
-                    \`;
+                    `;
                 } else {
-                    headerLogo.innerHTML = \`
+                    headerLogo.innerHTML = `
                         <i class="fas fa-building mr-2"></i>
                         <span class="text-xl font-semibold text-white">DLG Administration</span>
-                    \`;
+                    `;
                 }
             }
         }
@@ -1905,45 +1513,45 @@ app.get('/', (c) => {
                 emptyState.classList.add('hidden');
                 
                 // Generate table rows
-                tableBody.innerHTML = clients.map(client => \`
+                tableBody.innerHTML = clients.map(client => `
                     <tr class="hover:bg-gray-700">
                         <td class="px-6 py-4 whitespace-nowrap">
                             <div class="flex items-center">
                                 <div class="flex-shrink-0 h-10 w-10">
                                     <div class="h-10 w-10 rounded-full bg-gray-600 flex items-center justify-center">
-                                        <span class="text-sm font-medium text-white">\${client.name.charAt(0).toUpperCase()}</span>
+                                        <span class="text-sm font-medium text-white">${client.name.charAt(0).toUpperCase()}</span>
                                     </div>
                                 </div>
                                 <div class="ml-4">
-                                    <div class="text-sm font-medium text-white">\${client.name}</div>
-                                    <div class="text-sm text-gray-400">\${client.contact_name}</div>
+                                    <div class="text-sm font-medium text-white">${client.name}</div>
+                                    <div class="text-sm text-gray-400">${client.contact_name}</div>
                                 </div>
                             </div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="text-sm text-white">\${client.contact_email}</div>
-                            \${client.contact_phone ? \`<div class="text-sm text-gray-400">\${client.contact_phone}</div>\` : ''}
+                            <div class="text-sm text-white">${client.contact_email}</div>
+                            ${client.contact_phone ? `<div class="text-sm text-gray-400">${client.contact_phone}</div>` : ''}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full \${getStatusColor(client.status)}">
-                                \${client.status.charAt(0).toUpperCase() + client.status.slice(1)}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(client.status)}">
+                                ${client.status.charAt(0).toUpperCase() + client.status.slice(1)}
                             </span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
-                            \${client.project_count || 0} projects
+                            ${client.project_count || 0} projects
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                             <div class="flex space-x-2">
-                                <button onclick="editClient('\${client.id}')" class="text-blue-400 hover:text-blue-300">
+                                <button onclick="editClient('${client.id}')" class="text-blue-400 hover:text-blue-300">
                                     <i class="fas fa-edit"></i>
                                 </button>
-                                <button onclick="deleteClient('\${client.id}')" class="text-red-400 hover:text-red-300">
+                                <button onclick="deleteClient('${client.id}')" class="text-red-400 hover:text-red-300">
                                     <i class="fas fa-trash"></i>
                                 </button>
                             </div>
                         </td>
                     </tr>
-                \`).join('');
+                `).join('');
                 
                 // Also update dashboard stats
                 loadDashboardStats();
@@ -2050,7 +1658,7 @@ app.get('/', (c) => {
                 let response;
                 if (editingClientId) {
                     // Update existing client
-                    response = await fetch(\`/api/clients/\${editingClientId}\`, {
+                    response = await fetch(`/api/clients/${editingClientId}`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
@@ -2087,7 +1695,7 @@ app.get('/', (c) => {
 
         async function editClient(clientId) {
             try {
-                const response = await fetch(\`/api/clients\`, {
+                const response = await fetch(`/api/clients`, {
                     headers: {
                         'X-Tenant-ID': '1'
                     }
@@ -2111,7 +1719,7 @@ app.get('/', (c) => {
             if (!confirm('Are you sure you want to delete this client?')) return;
             
             try {
-                const response = await fetch(\`/api/clients/\${clientId}\`, {
+                const response = await fetch(`/api/clients/${clientId}`, {
                     method: 'DELETE',
                     headers: {
                         'X-Tenant-ID': '1'
@@ -2183,37 +1791,37 @@ app.get('/', (c) => {
                     emptyState.classList.add('hidden');
                     
                     // Render projects grid
-                    grid.innerHTML = projects.map(project => \`
+                    grid.innerHTML = projects.map(project => `
                         <div class="bg-gray-700 rounded-lg p-6 border border-gray-600">
                             <div class="flex justify-between items-start mb-4">
                                 <div>
-                                    <h3 class="text-lg font-semibold text-white mb-2">\${project.name}</h3>
-                                    <p class="text-gray-300 text-sm mb-2">\${project.client_name || 'No client'}</p>
-                                    <span class="px-2 py-1 text-xs font-semibold rounded-full \${getProjectStatusColor(project.status)}">
-                                        \${project.status.replace('_', ' ').toUpperCase()}
+                                    <h3 class="text-lg font-semibold text-white mb-2">${project.name}</h3>
+                                    <p class="text-gray-300 text-sm mb-2">${project.client_name || 'No client'}</p>
+                                    <span class="px-2 py-1 text-xs font-semibold rounded-full ${getProjectStatusColor(project.status)}">
+                                        ${project.status.replace('_', ' ').toUpperCase()}
                                     </span>
                                 </div>
                                 <div class="text-right">
-                                    <p class="text-white font-semibold">$\${(project.value_cents / 100).toLocaleString()}</p>
-                                    <p class="text-gray-400 text-sm">Due: \${new Date(project.due_date).toLocaleDateString()}</p>
+                                    <p class="text-white font-semibold">$${(project.value_cents / 100).toLocaleString()}</p>
+                                    <p class="text-gray-400 text-sm">Due: ${new Date(project.due_date).toLocaleDateString()}</p>
                                 </div>
                             </div>
-                            <p class="text-gray-400 text-sm mb-4">\${project.description}</p>
+                            <p class="text-gray-400 text-sm mb-4">${project.description}</p>
                             <div class="flex justify-between items-center">
                                 <div class="text-sm text-gray-500">
-                                    Started: \${new Date(project.start_date).toLocaleDateString()}
+                                    Started: ${new Date(project.start_date).toLocaleDateString()}
                                 </div>
                                 <div class="flex space-x-2">
-                                    <button onclick="editProject(\${project.id})" class="text-blue-400 hover:text-blue-300">
+                                    <button onclick="editProject(${project.id})" class="text-blue-400 hover:text-blue-300">
                                         <i class="fas fa-edit"></i>
                                     </button>
-                                    <button onclick="viewProject(\${project.id})" class="text-green-400 hover:text-green-300">
+                                    <button onclick="viewProject(${project.id})" class="text-green-400 hover:text-green-300">
                                         <i class="fas fa-eye"></i>
                                     </button>
                                 </div>
                             </div>
                         </div>
-                    \`).join('');
+                    `).join('');
                 }
                 
                 // Also refresh dashboard stats
@@ -2302,42 +1910,42 @@ app.get('/', (c) => {
                     emptyState.classList.add('hidden');
                     
                     // Render invoices table
-                    tableBody.innerHTML = invoices.map(invoice => \`
+                    tableBody.innerHTML = invoices.map(invoice => `
                         <tr class="hover:bg-gray-700">
                             <td class="px-6 py-4 whitespace-nowrap">
-                                <div class="text-sm font-medium text-white">\${invoice.number}</div>
-                                <div class="text-sm text-gray-400">\${new Date(invoice.created_at).toLocaleDateString()}</div>
+                                <div class="text-sm font-medium text-white">${invoice.number}</div>
+                                <div class="text-sm text-gray-400">${new Date(invoice.created_at).toLocaleDateString()}</div>
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap">
-                                <div class="text-sm text-white">\${invoice.client_name || 'Unknown Client'}</div>
-                                <div class="text-sm text-gray-400">\${invoice.project_name || 'No project'}</div>
+                                <div class="text-sm text-white">${invoice.client_name || 'Unknown Client'}</div>
+                                <div class="text-sm text-gray-400">${invoice.project_name || 'No project'}</div>
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
-                                $\${(invoice.amount_cents / 100).toLocaleString()}
+                                $${(invoice.amount_cents / 100).toLocaleString()}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full \${getInvoiceStatusColor(invoice.status)}">
-                                    \${invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
+                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getInvoiceStatusColor(invoice.status)}">
+                                    ${invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
                                 </span>
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
-                                \${new Date(invoice.due_date).toLocaleDateString()}
+                                ${new Date(invoice.due_date).toLocaleDateString()}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                 <div class="flex space-x-2">
-                                    <button onclick="viewInvoice(\${invoice.id})" class="text-blue-400 hover:text-blue-300">
+                                    <button onclick="viewInvoice(${invoice.id})" class="text-blue-400 hover:text-blue-300">
                                         <i class="fas fa-eye"></i>
                                     </button>
-                                    <button onclick="editInvoice(\${invoice.id})" class="text-green-400 hover:text-green-300">
+                                    <button onclick="editInvoice(${invoice.id})" class="text-green-400 hover:text-green-300">
                                         <i class="fas fa-edit"></i>
                                     </button>
-                                    <button onclick="downloadInvoice(\${invoice.id})" class="text-purple-400 hover:text-purple-300">
+                                    <button onclick="downloadInvoice(${invoice.id})" class="text-purple-400 hover:text-purple-300">
                                         <i class="fas fa-download"></i>
                                     </button>
                                 </div>
                             </td>
                         </tr>
-                    \`).join('');
+                    `).join('');
                 }
                 
                 // Also refresh dashboard stats
@@ -2377,9 +1985,4 @@ app.get('/', (c) => {
         }
     </script>
 </body>
-</html>`);
-})
-
-
-
-export default app
+</html>
