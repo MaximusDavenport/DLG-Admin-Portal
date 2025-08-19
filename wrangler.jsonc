@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "dlg-platform-complete",
+  "name": "dlg-admin-portal",
   "compatibility_date": "2025-08-18",
   "pages_build_output_dir": "./dist",
   "compatibility_flags": [
@@ -9,8 +9,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "dlg-platform-production-2",
-      "database_id": "1b636916-68b3-4858-a4c1-9c0957ac456b"
+      "database_name": "dlg-admin-portal-production",
+      "database_id": "13e73a1e-5f81-4e23-8041-b10f03f8d542"
     }
   ]
 }
