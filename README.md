@@ -7,12 +7,15 @@
 
 ## 🌐 Live URLs
 
-### Production Deployment (✅ Restored & Active)
-- **Main DLG Admin Portal**: https://31b443e8.dlg-platform.pages.dev
-- **GA Customer Portal**: https://31b443e8.dlg-platform.pages.dev/ga
-- **BYF Customer Portal**: https://31b443e8.dlg-platform.pages.dev/byf
+### Production Deployment (✅ LIVE & Active)
+- **Custom Domain**: https://app.davenportlegacy.com (Main Production URL)
+- **Cloudflare Pages**: https://dlg-platform.pages.dev (Alternate URL)
+- **Latest Deployment**: https://33fbde37.dlg-platform.pages.dev (Current Build)
+- **GA Customer Portal**: https://app.davenportlegacy.com/ga
+- **BYF Customer Portal**: https://app.davenportlegacy.com/byf
 - **Backend API**: https://app.davenportlegacy.com/api/*
-- **Health Check**: https://31b443e8.dlg-platform.pages.dev/health
+- **Media API**: https://app.davenportlegacy.com/api/media (✅ Working)
+- **Health Check**: https://app.davenportlegacy.com/health
 
 ### Development Environment (✅ Enterprise-Ready with All Features)
 - **Main DLG Admin Portal**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev
@@ -250,12 +253,13 @@
 
 ## Summary
 
-**Status**: 🎉 **COMPLETE MULTI-PORTAL SYSTEM ENHANCED & OPERATIONAL**
+**Status**: 🚀 **PRODUCTION DEPLOYED & FULLY OPERATIONAL** (Updated Aug 19, 2025)
 
 Your comprehensive multi-portal system is now fully enhanced with:
 
 ### 🔴 DLG Administration Portal (Red/Dark Theme) - **ENTERPRISE-READY PLATFORM**
-- **URL**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev
+- **Production URL**: https://app.davenportlegacy.com ⭐ **LIVE ON CUSTOM DOMAIN**
+- **Development URL**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev
 - **Features**: Multi-contact management, vendor tracking, professional monetary formatting, working invoice actions, print functionality, URL persistence
 - **Interface**: Compact list layouts, page-based navigation, breadcrumb system, cross-reference linking
 - **Security**: Login-required access, proper zoom compatibility, responsive design
@@ -263,13 +267,15 @@ Your comprehensive multi-portal system is now fully enhanced with:
 - **Login**: maximus@davenportlegacy.com / password123
 
 ### 🟢 GA Customer Portal (Green Theme) - **INTERACTIVE PROJECT CARDS**
-- **URL**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev/ga
+- **Production URL**: https://app.davenportlegacy.com/ga ⭐ **LIVE ON CUSTOM DOMAIN**
+- **Development URL**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev/ga
 - **Features**: **Clickable project cards**, interactive dashboard, billing management, support center, profile settings
 - **Enhanced UX**: Hover effects and detailed project information modals
 - **Login**: testuser@ga.com / password123
 
 ### 🔵 BYF Customer Portal (Blue Theme RGB 8,56,94) - **COMPREHENSIVE MODAL SYSTEM**
-- **URL**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev/byf
+- **Production URL**: https://app.davenportlegacy.com/byf ⭐ **LIVE ON CUSTOM DOMAIN**
+- **Development URL**: https://3000-imdk1c172srk4udfp99b1-6532622b.e2b.dev/byf
 - **Features**: **Fully clickable foundation cards**, **interactive statistics modals** (Projects, Milestones, Timeline, Team), enhanced project tracking
 - **Enhanced UX**: Complete modal system with foundation projects, milestone tracking, timeline views, and team directory
 - **Login**: testuser@byf.com / password123
@@ -412,5 +418,35 @@ Your comprehensive multi-portal system is now fully enhanced with:
 **User Experience**:
 - Page-based navigation (not modal-heavy)
 - Breadcrumb navigation for context
+
+---
+
+## 🆕 Latest Updates (August 19, 2025)
+
+### ✅ Media & File Management System - FULLY OPERATIONAL
+- **R2 Storage Integration**: Cloudflare R2 bucket fully configured and working
+- **File Upload API**: `/api/media/upload` - Real-time file upload with progress tracking
+- **File Serving API**: `/api/media/uploads/:filename` - Optimized file delivery with caching
+- **File Management**: List, delete, and logo setting functionality all working
+- **Route Ordering Fix**: Moved all media endpoints before tenant middleware to resolve 400 errors
+- **Frontend Integration**: Media grid, previews, and logo display fully functional
+
+### 🚀 Production Deployment - CUSTOM DOMAIN LIVE
+- **Custom Domain**: https://app.davenportlegacy.com successfully deployed
+- **Cloudflare Pages**: Project "dlg-platform" with automatic deployments
+- **GitHub Integration**: Continuous deployment from main branch
+- **API Verification**: All endpoints tested and working in production
+- **Performance**: Global edge deployment for optimal speed
+
+### 🔧 Technical Improvements
+- **Media API Architecture**: All media endpoints exempt from tenant validation
+- **File URL Generation**: Corrected paths for proper file serving
+- **Error Handling**: Improved error responses and debugging
+- **Development Workflow**: PM2 process management for stable local development
+- **Version Control**: Regular commits with detailed change descriptions
+
+---
+
+*This system successfully restores and enhances the original working portal system with full production deployment on custom domain.*
 - Cross-reference linking between all related items
 - Responsive design working at all zoom levels
