@@ -435,6 +435,12 @@ app.get('/', (c) => {
     <!-- Landing Page (shown when not logged in) -->
     <div id="landingPage" class="min-h-screen flex items-center justify-center">
         <div class="text-center">
+            <!-- Logo Display -->
+            <div id="landingPageLogo" class="mb-8">
+                <div class="w-24 h-24 mx-auto mb-4 bg-gray-700 rounded-lg flex items-center justify-center">
+                    <i class="fas fa-building text-gray-400 text-2xl"></i>
+                </div>
+            </div>
             <h1 class="text-4xl font-bold mb-8">DLG Administration Portal</h1>
             <button id="loginBtn" class="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg">
                 Staff Login
@@ -449,7 +455,10 @@ app.get('/', (c) => {
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between h-16">
                     <div class="flex items-center">
-                        <h1 class="text-xl font-semibold text-white">DLG Administration</h1>
+                        <div class="navbar-brand-logo flex items-center">
+                            <i class="fas fa-building mr-2"></i>
+                            <span class="text-xl font-semibold text-white">DLG Administration</span>
+                        </div>
                     </div>
                     <div class="flex items-center space-x-4">
                         <button id="logoutBtn" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
@@ -818,6 +827,12 @@ app.get('/', (c) => {
     <!-- Login Modal -->
     <div id="loginModal" class="hidden modal-overlay">
         <div class="bg-gray-800 rounded-lg p-8 w-96 max-w-md">
+            <!-- Logo Display in Modal -->
+            <div id="loginModalLogo" class="mb-6 text-center">
+                <div class="w-16 h-16 mx-auto mb-3 bg-gray-700 rounded-lg flex items-center justify-center">
+                    <i class="fas fa-building text-gray-400"></i>
+                </div>
+            </div>
             <h2 class="text-2xl font-bold mb-6 text-center">Staff Login</h2>
             <form id="loginForm">
                 <div class="mb-4">
@@ -889,6 +904,9 @@ app.get('/', (c) => {
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM ready, initializing...');
             
+            // Load logo on page load (for landing page and login modal)
+            loadCurrentLogo();
+            
             const loginBtn = document.getElementById('loginBtn');
             const modal = document.getElementById('loginModal');
             const closeBtn = document.getElementById('closeModal');
@@ -944,6 +962,9 @@ app.get('/', (c) => {
                         // Show dashboard
                         showDashboard();
                         
+                        // Reload logo after login
+                        setTimeout(() => loadCurrentLogo(), 100);
+                        
                         // Clear form
                         loginForm.reset();
                     } else {
@@ -964,7 +985,7 @@ app.get('/', (c) => {
             // Initialize navigation
             initializeNavigation();
             
-            // Load current logo
+            // Load current logo for dashboard and all site elements
             loadCurrentLogo();
             
             // Load dashboard statistics
@@ -1154,6 +1175,27 @@ app.get('/', (c) => {
                     return;
                 }
                 
+                // Auto-set first image as logo if no logo is currently set
+                const currentLogo = JSON.parse(localStorage.getItem('dlg_admin_current_logo') || 'null');
+                if (!currentLogo && media.length > 0) {
+                    const firstImage = media.find(item => {
+                        const filename = item.key.split('/').pop();
+                        return filename.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                    });
+                    
+                    if (firstImage) {
+                        console.log('Auto-setting first image as logo:', firstImage.key);
+                        const logoData = {
+                            ...firstImage,
+                            name: firstImage.key.split('/').pop(),
+                            type: 'image/' + firstImage.key.split('.').pop().toLowerCase()
+                        };
+                        localStorage.setItem('dlg_admin_current_logo', JSON.stringify(logoData));
+                        updateCurrentLogoDisplay(logoData);
+                        updateSiteLogos(logoData);
+                    }
+                }
+                
                 emptyState.classList.add('hidden');
                 
                 // Generate media grid HTML
@@ -1227,6 +1269,7 @@ app.get('/', (c) => {
                     
                     localStorage.setItem('dlg_admin_current_logo', JSON.stringify(logoData));
                     updateCurrentLogoDisplay(logoData);
+                    updateSiteLogos(logoData); // Update logos across all pages
                     showNotification('Logo updated successfully!', 'success');
                 }
             } catch (error) {
@@ -1259,6 +1302,7 @@ app.get('/', (c) => {
                 if (currentLogo && currentLogo.key === mediaKey) {
                     localStorage.removeItem('dlg_admin_current_logo');
                     updateCurrentLogoDisplay(null);
+                    updateSiteLogos(null); // Clear logos across all pages
                 }
                 
                 loadMediaData();
@@ -1333,6 +1377,72 @@ app.get('/', (c) => {
         function loadCurrentLogo() {
             const currentLogo = JSON.parse(localStorage.getItem('dlg_admin_current_logo') || 'null');
             updateCurrentLogoDisplay(currentLogo);
+            updateSiteLogos(currentLogo);
+        }
+        
+        // Update site logos across all pages
+        function updateSiteLogos(logoData) {
+            updateLandingPageLogo(logoData);
+            updateLoginModalLogo(logoData);
+            updateDashboardLogo(logoData);
+        }
+        
+        // Update landing page logo
+        function updateLandingPageLogo(logoData) {
+            const logoContainer = document.getElementById('landingPageLogo');
+            if (logoContainer) {
+                if (logoData && logoData.url && logoData.type && logoData.type.startsWith('image/')) {
+                    logoContainer.innerHTML = \`
+                        <div class="w-24 h-24 mx-auto mb-4 bg-gray-700 rounded-lg overflow-hidden">
+                            <img src="\${logoData.url}" alt="\${logoData.name || 'Logo'}" class="w-full h-full object-cover">
+                        </div>
+                    \`;
+                } else {
+                    logoContainer.innerHTML = \`
+                        <div class="w-24 h-24 mx-auto mb-4 bg-gray-700 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-building text-gray-400 text-2xl"></i>
+                        </div>
+                    \`;
+                }
+            }
+        }
+        
+        // Update login modal logo
+        function updateLoginModalLogo(logoData) {
+            const logoContainer = document.getElementById('loginModalLogo');
+            if (logoContainer) {
+                if (logoData && logoData.url && logoData.type && logoData.type.startsWith('image/')) {
+                    logoContainer.innerHTML = \`
+                        <div class="w-16 h-16 mx-auto mb-3 bg-gray-700 rounded-lg overflow-hidden">
+                            <img src="\${logoData.url}" alt="\${logoData.name || 'Logo'}" class="w-full h-full object-cover">
+                        </div>
+                    \`;
+                } else {
+                    logoContainer.innerHTML = \`
+                        <div class="w-16 h-16 mx-auto mb-3 bg-gray-700 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-building text-gray-400"></i>
+                        </div>
+                    \`;
+                }
+            }
+        }
+        
+        // Update dashboard header logo  
+        function updateDashboardLogo(logoData) {
+            const headerLogo = document.querySelector('.navbar-brand-logo');
+            if (headerLogo) {
+                if (logoData && logoData.url && logoData.type && logoData.type.startsWith('image/')) {
+                    headerLogo.innerHTML = \`
+                        <img src="\${logoData.url}" alt="\${logoData.name || 'Logo'}" class="w-8 h-8 mr-2 rounded object-cover">
+                        <span class="text-xl font-semibold text-white">DLG Administration</span>
+                    \`;
+                } else {
+                    headerLogo.innerHTML = \`
+                        <i class="fas fa-building mr-2"></i>
+                        <span class="text-xl font-semibold text-white">DLG Administration</span>
+                    \`;
+                }
+            }
         }
 
         // Dashboard stats loading
