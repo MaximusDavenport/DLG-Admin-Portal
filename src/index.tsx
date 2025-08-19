@@ -24,7 +24,129 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 // Enable CORS
 app.use('/api/*', cors())
 
-// Tenant middleware to get tenant from header
+// Media API - all media endpoints before tenant middleware since they don't need tenant validation
+
+// Serve media files
+app.get('/api/media/uploads/:filename', async (c) => {
+  const { env } = c
+  const filename = c.req.param('filename')
+  const key = `uploads/${filename}`
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    const object = await env.MEDIA_BUCKET.get(key)
+    
+    if (!object) {
+      return c.notFound()
+    }
+    
+    return new Response(object.body, {
+      headers: {
+        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+        'Cache-Control': 'public, max-age=31536000',
+        'ETag': object.etag,
+      }
+    })
+  } catch (error) {
+    console.error('Media serve error:', error)
+    return c.json({ error: 'Failed to serve file' }, 500)
+  }
+})
+
+// Media upload API
+app.post('/api/media/upload', async (c) => {
+  const { env } = c
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File
+    
+    if (!file) {
+      return c.json({ error: 'No file provided' }, 400)
+    }
+    
+    // Generate unique filename
+    const ext = file.name.split('.').pop()
+    const timestamp = Date.now()
+    const random = Math.random().toString(36).substring(7)
+    const key = `uploads/${timestamp}-${random}.${ext}`
+    
+    const arrayBuffer = await file.arrayBuffer()
+    
+    await env.MEDIA_BUCKET.put(key, arrayBuffer, {
+      httpMetadata: {
+        contentType: file.type,
+      },
+    })
+    
+    return c.json({ 
+      key, 
+      url: `/api/media/uploads/${key.replace('uploads/', '')}`,
+      filename: file.name,
+      originalName: file.name,
+      size: file.size,
+      type: file.type,
+      uploadedAt: new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('Upload error:', error)
+    return c.json({ error: 'Upload failed' }, 500)
+  }
+})
+
+// List uploaded media files
+app.get('/api/media', async (c) => {
+  const { env } = c
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    const objects = await env.MEDIA_BUCKET.list({ prefix: 'uploads/' })
+    
+    const files = objects.objects.map(obj => ({
+      key: obj.key,
+      url: `/api/media/uploads/${obj.key.replace('uploads/', '')}`,
+      size: obj.size,
+      uploaded: obj.uploaded,
+      etag: obj.etag
+    }))
+    
+    return c.json(files)
+  } catch (error) {
+    console.error('Media list error:', error)
+    return c.json({ error: 'Failed to list files' }, 500)
+  }
+})
+
+// Delete media file
+app.delete('/api/media/uploads/:filename', async (c) => {
+  const { env } = c
+  const filename = c.req.param('filename')
+  const key = `uploads/${filename}`
+  
+  if (!env.MEDIA_BUCKET) {
+    return c.json({ error: 'Media storage not configured' }, 501)
+  }
+  
+  try {
+    await env.MEDIA_BUCKET.delete(key)
+    return c.json({ message: 'File deleted successfully' })
+  } catch (error) {
+    console.error('Media delete error:', error)
+    return c.json({ error: 'Failed to delete file' }, 500)
+  }
+})
+
+// Tenant middleware to get tenant from header (for other API routes)
 app.use('/api/*', async (c, next) => {
   const tenantId = c.req.header('X-Tenant-ID')
   if (!tenantId) {
@@ -1078,16 +1200,38 @@ app.get('/', (c) => {
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        function setAsLogo(mediaId) {
-            console.log('Setting logo:', mediaId);
+        async function setAsLogo(mediaKey) {
+            console.log('Setting logo:', mediaKey);
             
-            const media = JSON.parse(localStorage.getItem('dlg_admin_media') || '[]');
-            const selectedMedia = media.find(item => item.id == mediaId);
-            
-            if (selectedMedia) {
-                localStorage.setItem('dlg_admin_current_logo', JSON.stringify(selectedMedia));
-                updateCurrentLogoDisplay(selectedMedia);
-                showNotification('Logo updated successfully!', 'success');
+            try {
+                // Get current media list to find the selected file
+                const response = await fetch('/api/media', {
+                    headers: {
+                        'X-Tenant-ID': '1'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load media');
+                }
+                
+                const media = await response.json();
+                const selectedMedia = media.find(item => item.key === mediaKey);
+                
+                if (selectedMedia) {
+                    // Add filename for display
+                    const logoData = {
+                        ...selectedMedia,
+                        name: selectedMedia.key.split('/').pop()
+                    };
+                    
+                    localStorage.setItem('dlg_admin_current_logo', JSON.stringify(logoData));
+                    updateCurrentLogoDisplay(logoData);
+                    showNotification('Logo updated successfully!', 'success');
+                }
+            } catch (error) {
+                console.error('Set logo error:', error);
+                showNotification('Failed to set logo', 'error');
             }
         }
 
@@ -1097,7 +1241,9 @@ app.get('/', (c) => {
             if (!confirm('Are you sure you want to delete this file?')) return;
             
             try {
-                const response = await fetch(\`/api/media/\${mediaKey}\`, {
+                // Extract filename from key (uploads/filename.ext -> filename.ext)
+                const filename = mediaKey.split('/').pop();
+                const response = await fetch(\`/api/media/uploads/\${filename}\`, {
                     method: 'DELETE',
                     headers: {
                         'X-Tenant-ID': '1'
@@ -1794,122 +1940,6 @@ app.get('/', (c) => {
 </html>`);
 })
 
-// Media upload API
-app.post('/api/media/upload', async (c) => {
-  const { env } = c
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    const formData = await c.req.formData()
-    const file = formData.get('file') as File
-    
-    if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
-    }
-    
-    // Generate unique filename
-    const ext = file.name.split('.').pop()
-    const timestamp = Date.now()
-    const random = Math.random().toString(36).substring(7)
-    const key = `uploads/${timestamp}-${random}.${ext}`
-    
-    const arrayBuffer = await file.arrayBuffer()
-    
-    await env.MEDIA_BUCKET.put(key, arrayBuffer, {
-      httpMetadata: {
-        contentType: file.type,
-      },
-    })
-    
-    return c.json({ 
-      key, 
-      url: `/api/media/${key}`,
-      filename: file.name,
-      originalName: file.name,
-      size: file.size,
-      type: file.type,
-      uploadedAt: new Date().toISOString()
-    })
-  } catch (error) {
-    console.error('Upload error:', error)
-    return c.json({ error: 'Upload failed' }, 500)
-  }
-})
 
-// Serve media files
-app.get('/api/media/:key{.*}', async (c) => {
-  const { env } = c
-  const key = c.req.param('key')
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    const object = await env.MEDIA_BUCKET.get(key)
-    
-    if (!object) {
-      return c.notFound()
-    }
-    
-    return new Response(object.body, {
-      headers: {
-        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
-        'Cache-Control': 'public, max-age=31536000',
-        'ETag': object.etag,
-      }
-    })
-  } catch (error) {
-    console.error('Media serve error:', error)
-    return c.json({ error: 'Failed to serve file' }, 500)
-  }
-})
-
-// List uploaded media files
-app.get('/api/media', async (c) => {
-  const { env } = c
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    const objects = await env.MEDIA_BUCKET.list({ prefix: 'uploads/' })
-    
-    const files = objects.objects.map(obj => ({
-      key: obj.key,
-      url: `/api/media/${obj.key}`,
-      size: obj.size,
-      uploaded: obj.uploaded,
-      etag: obj.etag
-    }))
-    
-    return c.json(files)
-  } catch (error) {
-    console.error('Media list error:', error)
-    return c.json({ error: 'Failed to list files' }, 500)
-  }
-})
-
-// Delete media file
-app.delete('/api/media/:key{.*}', async (c) => {
-  const { env } = c
-  const key = c.req.param('key')
-  
-  if (!env.MEDIA_BUCKET) {
-    return c.json({ error: 'Media storage not configured' }, 501)
-  }
-  
-  try {
-    await env.MEDIA_BUCKET.delete(key)
-    return c.json({ message: 'File deleted successfully' })
-  } catch (error) {
-    console.error('Media delete error:', error)
-    return c.json({ error: 'Failed to delete file' }, 500)
-  }
-})
 
 export default app
